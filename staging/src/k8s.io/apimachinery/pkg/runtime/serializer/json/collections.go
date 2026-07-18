@@ -34,7 +34,6 @@ import (
 
 var (
 	rawExtensionObjectType = reflect.TypeOf(runtime.RawExtension{})
-	objectSliceType        = reflect.TypeOf([]runtime.Object{})
 	objectType             = reflect.TypeOf((*runtime.Object)(nil)).Elem()
 )
 
@@ -99,7 +98,7 @@ func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, reflect
 		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, err
 	}
 	elemType := items.Type().Elem()
-	if elemType == rawExtensionObjectType || (items.Len() > 0 && elemType.Implements(objectType)) {
+	if items.Len() > 0 && (elemType == rawExtensionObjectType || elemType.Implements(objectType)) {
 		// Snapshot elements that already implement runtime.Object before
 		// invoking the caller's writer or an item marshaler. Unlike value
 		// elements with pointer receivers, their backing-array slots can be
@@ -172,9 +171,6 @@ func (e *streamEncoder) encodeList(typeMeta metav1.TypeMeta, listMeta metav1.Lis
 }
 
 func (e *streamEncoder) encodeItems(items reflect.Value) error {
-	if items.Type() == objectSliceType {
-		return e.encodeItemsObjectSlice(items.Interface().([]runtime.Object))
-	}
 	if items.IsNil() {
 		return e.encodeKeyValuePair("items", nil, nil)
 	}
@@ -194,33 +190,13 @@ func (e *streamEncoder) encodeItems(items reflect.Value) error {
 		var item runtime.Object
 		switch {
 		case implementsObject:
-			item = raw.Interface().(runtime.Object)
+			if value := raw.Interface(); value != nil {
+				item = value.(runtime.Object)
+			}
 		default:
 			var ok bool
 			if item, ok = raw.Addr().Interface().(runtime.Object); !ok {
 				return fmt.Errorf("item[%v]: Expected object, got %#v(%s)", i, raw.Interface(), raw.Kind())
-			}
-		}
-		if err := e.encodeValue(item, nil); err != nil {
-			return err
-		}
-	}
-	_, err := e.w.Write([]byte("]"))
-	return err
-}
-
-func (e *streamEncoder) encodeItemsObjectSlice(items []runtime.Object) error {
-	if items == nil {
-		return e.encodeKeyValuePair("items", nil, nil)
-	}
-	if _, err := e.w.Write([]byte(`"items":[`)); err != nil {
-		return err
-	}
-	comma := []byte(",")
-	for i, item := range items {
-		if i > 0 {
-			if _, err := e.w.Write(comma); err != nil {
-				return err
 			}
 		}
 		if err := e.encodeValue(item, nil); err != nil {

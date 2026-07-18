@@ -42,6 +42,9 @@ func TestCollectionsEncoding(t *testing.T) {
 	})
 	testStreamingTypedListSnapshotsItemsBeforeWriterCallback(t)
 	testStreamingPointerListSnapshotsItemsBeforeWriterCallback(t)
+	testStreamingRuntimeObjectListSnapshotsItemsBeforeWriterCallback(t)
+	testStreamingValueRuntimeObjectListSnapshotsItemsBeforeWriterCallback(t)
+	testStreamingEmptyListItems(t)
 	testStreamingRawExtensionListSnapshotsItemsBeforeWriterCallback(t)
 }
 
