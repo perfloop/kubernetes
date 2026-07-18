@@ -101,10 +101,9 @@ func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, listIte
 	directItems := itemsField.Name == "Items" && items.Kind() == reflect.Slice
 	if directItems && items.Len() > 0 {
 		elemType := items.Type().Elem()
-		// runtime.Object's exported methods make a value-receiver implementation
-		// observable here. Keep those elements on ExtractList's eager snapshot;
+		// Keep value-receiver runtime.Objects on ExtractList's eager snapshot;
 		// only a pointer-receiver value element can retain its slice header.
-		directItems = elemType != rawExtensionObjectType && elemType.NumMethod() == 0 && reflect.PointerTo(elemType).Implements(objectType)
+		directItems = elemType != rawExtensionObjectType && !elemType.Implements(objectType) && reflect.PointerTo(elemType).Implements(objectType)
 	}
 	var result listItems
 	if directItems {
