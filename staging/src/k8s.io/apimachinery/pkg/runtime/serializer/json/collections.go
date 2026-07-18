@@ -184,25 +184,13 @@ func (e *streamEncoder) encodeItems(items reflect.Value) error {
 		return err
 	}
 	comma := []byte(",")
-	elemType := items.Type().Elem()
-	implementsObject := elemType.Implements(objectType)
 	for i := 0; i < items.Len(); i++ {
 		if i > 0 {
 			if _, err := e.w.Write(comma); err != nil {
 				return err
 			}
 		}
-		raw := items.Index(i)
-		var item runtime.Object
-		switch {
-		case implementsObject:
-			// ExtractList represents a zero RawExtension as a nil runtime.Object.
-			if value := raw.Interface(); value != nil {
-				item = value.(runtime.Object)
-			}
-		default:
-			item = raw.Addr().Interface().(runtime.Object)
-		}
+		item := items.Index(i).Addr().Interface().(runtime.Object)
 		if err := e.encodeValue(item, nil); err != nil {
 			return err
 		}
