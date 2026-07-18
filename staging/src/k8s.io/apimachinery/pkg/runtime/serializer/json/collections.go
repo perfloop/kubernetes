@@ -37,6 +37,13 @@ var (
 	objectType             = reflect.TypeOf((*runtime.Object)(nil)).Elem()
 )
 
+// listItems retains either a direct value-element slice or the eager object
+// snapshot required before the encoder invokes callbacks.
+type listItems struct {
+	direct   reflect.Value
+	snapshot []runtime.Object
+}
+
 func streamEncodeCollections(obj runtime.Object, w io.Writer) (bool, error) {
 	list, ok := obj.(*unstructured.UnstructuredList)
 	if ok {
@@ -58,35 +65,35 @@ func streamEncodeCollections(obj runtime.Object, w io.Writer) (bool, error) {
 // * Validate json tags to prevent incompatibility with json standard package.
 // * ListMetaAccessor doesn't distinguish empty from nil value.
 // * TypeAccessort reparsing "apiVersion" and serializing it with "{group}/{version}"
-func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, reflect.Value, error) {
+func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, listItems, error) {
 	listValue, err := conversion.EnforcePtr(list)
 	if err != nil {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, err
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listItems{}, err
 	}
 	listType := listValue.Type()
 	if listType.NumField() != 3 {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf("expected ListType to have 3 fields")
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listItems{}, fmt.Errorf("expected ListType to have 3 fields")
 	}
 	// TypeMeta
 	typeMeta, ok := listValue.Field(0).Interface().(metav1.TypeMeta)
 	if !ok {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf("expected TypeMeta field to have TypeMeta type")
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listItems{}, fmt.Errorf("expected TypeMeta field to have TypeMeta type")
 	}
 	if !listType.Field(0).Anonymous {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf(`expected TypeMeta json field tag to be embedded`)
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listItems{}, fmt.Errorf(`expected TypeMeta json field tag to be embedded`)
 	}
 	if jsonTag, jsonTagExists := listType.Field(0).Tag.Lookup("json"); !jsonTagExists {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf(`expected TypeMeta json field tag`)
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listItems{}, fmt.Errorf(`expected TypeMeta json field tag`)
 	} else if jsonTag != "" && jsonTag != ",inline" {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf(`expected TypeMeta json field tag to be "" or ",inline"`)
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listItems{}, fmt.Errorf(`expected TypeMeta json field tag to be "" or ",inline"`)
 	}
 	// ListMeta
 	listMeta, ok := listValue.Field(1).Interface().(metav1.ListMeta)
 	if !ok {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf("expected ListMeta field to have ListMeta type")
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listItems{}, fmt.Errorf("expected ListMeta field to have ListMeta type")
 	}
 	if listType.Field(1).Tag.Get("json") != "metadata,omitempty" {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf(`expected ListMeta json field tag to be "metadata,omitempty"`)
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listItems{}, fmt.Errorf(`expected ListMeta json field tag to be "metadata,omitempty"`)
 	}
 	// Items
 	itemsField := listType.Field(2)
@@ -96,26 +103,26 @@ func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, reflect
 		elemType := items.Type().Elem()
 		directItems = elemType != rawExtensionObjectType && !elemType.Implements(objectType) && reflect.PointerTo(elemType).Implements(objectType)
 	}
+	var result listItems
 	if directItems {
 		// Snapshot the slice header before invoking the caller's writer or an
 		// item marshaler. This retains ExtractList's item sequence without
 		// allocating an intermediate []runtime.Object for value elements.
-		items = items.Slice(0, items.Len())
+		result.direct = items.Slice(0, items.Len())
 	} else {
 		// Snapshot elements that already implement runtime.Object before
 		// invoking the caller's writer or an item marshaler. Unlike value
 		// elements with pointer receivers, their backing-array slots can be
 		// replaced after a write.
-		objectItems, err := meta.ExtractList(list)
+		result.snapshot, err = meta.ExtractList(list)
 		if err != nil {
-			return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, err
+			return metav1.TypeMeta{}, metav1.ListMeta{}, listItems{}, err
 		}
-		items = reflect.ValueOf(objectItems)
 	}
 	if itemsField.Tag.Get("json") != "items" {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf(`expected Items json field tag to be "items"`)
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listItems{}, fmt.Errorf(`expected Items json field tag to be "items"`)
 	}
-	return typeMeta, listMeta, items, nil
+	return typeMeta, listMeta, result, nil
 }
 
 // streamEncoder encodes JSON values to w, reusing an internal buffer across
@@ -132,7 +139,7 @@ func newStreamEncoder(w io.Writer) *streamEncoder {
 	return e
 }
 
-func (e *streamEncoder) encodeList(typeMeta metav1.TypeMeta, listMeta metav1.ListMeta, items reflect.Value) error {
+func (e *streamEncoder) encodeList(typeMeta metav1.TypeMeta, listMeta metav1.ListMeta, items listItems) error {
 	// Start
 	if _, err := e.w.Write([]byte(`{`)); err != nil {
 		return err
@@ -156,7 +163,11 @@ func (e *streamEncoder) encodeList(typeMeta metav1.TypeMeta, listMeta metav1.Lis
 	}
 
 	// Items
-	if err := e.encodeItems(items); err != nil {
+	if items.direct.IsValid() {
+		if err := e.encodeItems(items.direct); err != nil {
+			return err
+		}
+	} else if err := e.encodeItemsObjectSlice(items.snapshot); err != nil {
 		return err
 	}
 
@@ -197,6 +208,28 @@ func (e *streamEncoder) encodeItems(items reflect.Value) error {
 		}
 	}
 	_, err := e.w.Write([]byte("]"))
+	return err
+}
+
+// encodeItemsObjectSlice retains ExtractList's direct interface-slice traversal
+// for representations that require an eager snapshot.
+func (e *streamEncoder) encodeItemsObjectSlice(items []runtime.Object) (err error) {
+	if items == nil {
+		return e.encodeKeyValuePair("items", nil, nil)
+	}
+	if _, err = e.w.Write([]byte(`"items":[`)); err != nil {
+		return err
+	}
+	suffix := []byte(",")
+	for i, item := range items {
+		if i == len(items)-1 {
+			suffix = nil
+		}
+		if err = e.encodeValue(item, suffix); err != nil {
+			return err
+		}
+	}
+	_, err = e.w.Write([]byte("]"))
 	return err
 }
 
