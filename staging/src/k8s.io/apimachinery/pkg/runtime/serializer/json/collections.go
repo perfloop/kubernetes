@@ -190,14 +190,12 @@ func (e *streamEncoder) encodeItems(items reflect.Value) error {
 		var item runtime.Object
 		switch {
 		case implementsObject:
+			// ExtractList represents a zero RawExtension as a nil runtime.Object.
 			if value := raw.Interface(); value != nil {
 				item = value.(runtime.Object)
 			}
 		default:
-			var ok bool
-			if item, ok = raw.Addr().Interface().(runtime.Object); !ok {
-				return fmt.Errorf("item[%v]: Expected object, got %#v(%s)", i, raw.Interface(), raw.Kind())
-			}
+			item = raw.Addr().Interface().(runtime.Object)
 		}
 		if err := e.encodeValue(item, nil); err != nil {
 			return err

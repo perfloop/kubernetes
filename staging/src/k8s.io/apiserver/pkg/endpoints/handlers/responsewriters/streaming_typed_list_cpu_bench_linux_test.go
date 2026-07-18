@@ -48,18 +48,16 @@ func BenchmarkWriteObjectNegotiatedStreamingPodListCPU(b *testing.B) {
 	if err != nil {
 		b.Fatalf("read start thread CPU time: %v", err)
 	}
-	operations := 0
 	for b.Loop() {
 		if got := writeStreamingPodListToRecorder(b, codecs, list, req); got != expectedLength {
 			b.Fatalf("response length = %d, want %d", got, expectedLength)
 		}
-		operations++
 	}
 	endCPU, err := currentThreadCPUTime()
 	if err != nil {
 		b.Fatalf("read end thread CPU time: %v", err)
 	}
-	b.ReportMetric(float64(endCPU-startCPU)/float64(operations), "cpu-ns/op")
+	b.ReportMetric(float64(endCPU-startCPU)/float64(b.N), "cpu-ns/op")
 }
 
 func writeStreamingPodListToRecorder(b *testing.B, codecs runtime.NegotiatedSerializer, list *v1.PodList, req *http.Request) int {
