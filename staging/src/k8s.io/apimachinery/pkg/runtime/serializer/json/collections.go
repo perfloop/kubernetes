@@ -98,24 +98,23 @@ func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, reflect
 	if err != nil {
 		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, err
 	}
-	if items.Type().Elem() == rawExtensionObjectType {
-		rawItems, err := meta.ExtractList(list)
+	elemType := items.Type().Elem()
+	if elemType == rawExtensionObjectType || (items.Len() > 0 && elemType.Implements(objectType)) {
+		// Snapshot elements that already implement runtime.Object before
+		// invoking the caller's writer or an item marshaler. Unlike value
+		// elements with pointer receivers, their backing-array slots can be
+		// replaced after a write.
+		objectItems, err := meta.ExtractList(list)
 		if err != nil {
 			return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, err
 		}
-		if listType.Field(2).Tag.Get("json") != "items" {
-			return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf(`expected Items json field tag to be "items"`)
-		}
-		return typeMeta, listMeta, reflect.ValueOf(rawItems), nil
-	}
-	// Snapshot the slice header before invoking the caller's writer or an item
-	// marshaler. This retains ExtractList's item sequence without allocating an
-	// intermediate []runtime.Object.
-	items = items.Slice(0, items.Len())
-	if items.Len() > 0 {
-		elemType := items.Type().Elem()
-		implementsObject := elemType.Implements(objectType) || reflect.PointerTo(elemType).Implements(objectType)
-		if !implementsObject {
+		items = reflect.ValueOf(objectItems)
+	} else {
+		// Snapshot the slice header before invoking the caller's writer or an
+		// item marshaler. This retains ExtractList's item sequence without
+		// allocating an intermediate []runtime.Object for value elements.
+		items = items.Slice(0, items.Len())
+		if items.Len() > 0 && !reflect.PointerTo(elemType).Implements(objectType) {
 			return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf("expected Items elements to implement runtime.Object")
 		}
 	}

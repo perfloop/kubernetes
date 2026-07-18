@@ -41,6 +41,7 @@ func TestCollectionsEncoding(t *testing.T) {
 		testCollectionsEncoding(t, NewSerializerWithOptions(DefaultMetaFactory, nil, nil, SerializerOptions{StreamingCollectionsEncoding: true}), true)
 	})
 	testStreamingTypedListSnapshotsItemsBeforeWriterCallback(t)
+	testStreamingPointerListSnapshotsItemsBeforeWriterCallback(t)
 	testStreamingRawExtensionListSnapshotsItemsBeforeWriterCallback(t)
 }
 

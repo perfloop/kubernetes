@@ -37,6 +37,16 @@ func (l *rawExtensionList) DeepCopyObject() runtime.Object {
 	return l
 }
 
+type pointerCarpList struct {
+	metav1.TypeMeta `json:""`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []*testapigroupv1.Carp `json:"items"`
+}
+
+func (l *pointerCarpList) DeepCopyObject() runtime.Object {
+	return l
+}
+
 type mutateAfterFirstWriteBuffer struct {
 	bytes.Buffer
 	mutate func()
@@ -119,8 +129,27 @@ func testStreamingTypedListSnapshotsItemsBeforeWriterCallback(t *testing.T) {
 	if err := streaming.Encode(list, writer); err != nil {
 		t.Fatalf("streaming encode: %v", err)
 	}
-	if writer.writes == 0 {
-		t.Fatal("streaming encoder did not write")
+	got := streamingItemNames(t, writer.Bytes())
+	if want := []string{"first", "second"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("streaming item sequence = %v, want %v", got, want)
+	}
+}
+
+func testStreamingPointerListSnapshotsItemsBeforeWriterCallback(t *testing.T) {
+	list := &pointerCarpList{
+		Items: []*testapigroupv1.Carp{
+			{ObjectMeta: metav1.ObjectMeta{Name: "first"}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "second"}},
+		},
+	}
+	writer := &mutateAfterFirstWriteBuffer{
+		mutate: func() {
+			list.Items[1] = &testapigroupv1.Carp{ObjectMeta: metav1.ObjectMeta{Name: "replacement"}}
+		},
+	}
+	streaming := NewSerializerWithOptions(DefaultMetaFactory, nil, nil, SerializerOptions{StreamingCollectionsEncoding: true})
+	if err := streaming.Encode(list, writer); err != nil {
+		t.Fatalf("streaming encode: %v", err)
 	}
 
 	got := streamingItemNames(t, writer.Bytes())
