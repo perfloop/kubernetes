@@ -89,16 +89,19 @@ func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, reflect
 		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf(`expected ListMeta json field tag to be "metadata,omitempty"`)
 	}
 	// Items
-	itemsPtr, err := meta.GetItemsPtr(list)
-	if err != nil {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, err
+	itemsField := listType.Field(2)
+	items := listValue.Field(2)
+	directItems := itemsField.Name == "Items" && items.Kind() == reflect.Slice
+	if directItems && items.Len() > 0 {
+		elemType := items.Type().Elem()
+		directItems = elemType != rawExtensionObjectType && !elemType.Implements(objectType) && reflect.PointerTo(elemType).Implements(objectType)
 	}
-	items, err := conversion.EnforcePtr(itemsPtr)
-	if err != nil {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, err
-	}
-	elemType := items.Type().Elem()
-	if items.Len() > 0 && (elemType == rawExtensionObjectType || elemType.Implements(objectType)) {
+	if directItems {
+		// Snapshot the slice header before invoking the caller's writer or an
+		// item marshaler. This retains ExtractList's item sequence without
+		// allocating an intermediate []runtime.Object for value elements.
+		items = items.Slice(0, items.Len())
+	} else {
 		// Snapshot elements that already implement runtime.Object before
 		// invoking the caller's writer or an item marshaler. Unlike value
 		// elements with pointer receivers, their backing-array slots can be
@@ -108,16 +111,8 @@ func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, reflect
 			return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, err
 		}
 		items = reflect.ValueOf(objectItems)
-	} else {
-		// Snapshot the slice header before invoking the caller's writer or an
-		// item marshaler. This retains ExtractList's item sequence without
-		// allocating an intermediate []runtime.Object for value elements.
-		items = items.Slice(0, items.Len())
-		if items.Len() > 0 && !reflect.PointerTo(elemType).Implements(objectType) {
-			return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf("expected Items elements to implement runtime.Object")
-		}
 	}
-	if listType.Field(2).Tag.Get("json") != "items" {
+	if itemsField.Tag.Get("json") != "items" {
 		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf(`expected Items json field tag to be "items"`)
 	}
 	return typeMeta, listMeta, items, nil

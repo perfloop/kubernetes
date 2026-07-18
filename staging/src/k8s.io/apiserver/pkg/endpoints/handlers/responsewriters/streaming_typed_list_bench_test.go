@@ -30,23 +30,34 @@ import (
 )
 
 func BenchmarkWriteObjectNegotiatedStreamingPodList(b *testing.B) {
-	codecs, list := newStreamingPodListBenchmark(b)
+	codecs, lists := newStreamingPodListBenchmark(b)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeStreamingPodListResponse(codecs, list, w, r)
+		index := 0
+		if r.URL.Query().Get("variant") == "1" {
+			index = 1
+		}
+		writeStreamingPodListResponse(codecs, lists[index], w, r)
 	}))
 	defer server.Close()
 
 	client := server.Client()
-	expectedLength := requestStreamingPodList(b, client, server.URL)
+	urls := []string{server.URL + "?variant=0", server.URL + "?variant=1"}
+	expectedLengths := make([]int64, len(urls))
+	for i, url := range urls {
+		expectedLengths[i] = requestStreamingPodList(b, client, url)
+	}
+
+	index := 0
 	for b.Loop() {
-		if got := requestStreamingPodList(b, client, server.URL); got != expectedLength {
-			b.Fatalf("response length = %d, want %d", got, expectedLength)
+		if got, want := requestStreamingPodList(b, client, urls[index]), expectedLengths[index]; got != want {
+			b.Fatalf("response %d length = %d, want %d", index, got, want)
 		}
+		index = (index + 1) % len(urls)
 	}
 }
 
-func newStreamingPodListBenchmark(b *testing.B) (runtime.NegotiatedSerializer, *v1.PodList) {
+func newStreamingPodListBenchmark(b *testing.B) (runtime.NegotiatedSerializer, []*v1.PodList) {
 	b.Helper()
 
 	scheme := runtime.NewScheme()
@@ -54,9 +65,13 @@ func newStreamingPodListBenchmark(b *testing.B) (runtime.NegotiatedSerializer, *
 		b.Fatalf("add core/v1 to scheme: %v", err)
 	}
 	codecs := serializer.NewCodecFactory(scheme, serializer.WithStreamingCollectionEncodingToJSON())
-	list := benchmarkItems(b, 1000)
-	list.ResourceVersion = "100"
-	return codecs, list
+	lists := []*v1.PodList{
+		benchmarkItems(b, 1000),
+		benchmarkItems(b, 1000),
+	}
+	lists[0].ResourceVersion = "100"
+	lists[1].ResourceVersion = "101"
+	return codecs, lists
 }
 
 func writeStreamingPodListResponse(codecs runtime.NegotiatedSerializer, list *v1.PodList, w http.ResponseWriter, req *http.Request) {
