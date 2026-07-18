@@ -101,7 +101,10 @@ func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, listIte
 	directItems := itemsField.Name == "Items" && items.Kind() == reflect.Slice
 	if directItems && items.Len() > 0 {
 		elemType := items.Type().Elem()
-		directItems = elemType != rawExtensionObjectType && !elemType.Implements(objectType) && reflect.PointerTo(elemType).Implements(objectType)
+		// runtime.Object's exported methods make a value-receiver implementation
+		// observable here. Keep those elements on ExtractList's eager snapshot;
+		// only a pointer-receiver value element can retain its slice header.
+		directItems = elemType != rawExtensionObjectType && elemType.NumMethod() == 0 && reflect.PointerTo(elemType).Implements(objectType)
 	}
 	var result listItems
 	if directItems {
@@ -176,26 +179,24 @@ func (e *streamEncoder) encodeList(typeMeta metav1.TypeMeta, listMeta metav1.Lis
 	return err
 }
 
-func (e *streamEncoder) encodeItems(items reflect.Value) error {
+func (e *streamEncoder) encodeItems(items reflect.Value) (err error) {
 	if items.IsNil() {
 		return e.encodeKeyValuePair("items", nil, nil)
 	}
-	if _, err := e.w.Write([]byte(`"items":[`)); err != nil {
+	if _, err = e.w.Write([]byte(`"items":[`)); err != nil {
 		return err
 	}
-	comma := []byte(",")
+	suffix := []byte(",")
 	for i := 0; i < items.Len(); i++ {
-		if i > 0 {
-			if _, err := e.w.Write(comma); err != nil {
-				return err
-			}
+		if i == items.Len()-1 {
+			suffix = nil
 		}
 		item := items.Index(i).Addr().Interface().(runtime.Object)
-		if err := e.encodeValue(item, nil); err != nil {
+		if err = e.encodeValue(item, suffix); err != nil {
 			return err
 		}
 	}
-	_, err := e.w.Write([]byte("]"))
+	_, err = e.w.Write([]byte("]"))
 	return err
 }
 
