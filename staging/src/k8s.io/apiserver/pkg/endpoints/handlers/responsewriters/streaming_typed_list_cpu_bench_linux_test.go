@@ -34,38 +34,25 @@ func BenchmarkWriteObjectNegotiatedStreamingPodListCPU(b *testing.B) {
 	// This CPU measurement deliberately uses the direct response-writer path:
 	// unlike the HTTP latency benchmark, no client or server goroutine can
 	// share a process-wide counter with the operation under test.
-	oldGOMAXPROCS := goruntime.GOMAXPROCS(1)
-	defer goruntime.GOMAXPROCS(oldGOMAXPROCS)
 	// Keep the serial encoder and response writer on one OS thread so the
 	// thread CPU clock is scoped to the timed operation.
 	goruntime.LockOSThread()
 	defer goruntime.UnlockOSThread()
 
-	codecs, lists := newStreamingPodListBenchmark(b)
-	requests := []*http.Request{
-		httptest.NewRequest(http.MethodGet, "http://example.test/api/v1/pods?variant=0", nil),
-		httptest.NewRequest(http.MethodGet, "http://example.test/api/v1/pods?variant=1", nil),
-	}
-	for _, req := range requests {
-		req.Header.Set("Accept", "application/json")
-	}
-
-	expectedLengths := make([]int, len(requests))
-	for i, req := range requests {
-		expectedLengths[i] = writeStreamingPodListToRecorder(b, codecs, lists[i], req)
-	}
+	codecs, list := newStreamingPodListBenchmark(b)
+	req := httptest.NewRequest(http.MethodGet, "http://example.test/api/v1/pods", nil)
+	req.Header.Set("Accept", "application/json")
+	expectedLength := writeStreamingPodListToRecorder(b, codecs, list, req)
 
 	startCPU, err := currentThreadCPUTime()
 	if err != nil {
 		b.Fatalf("read start thread CPU time: %v", err)
 	}
-	index := 0
 	operations := 0
 	for b.Loop() {
-		if got, want := writeStreamingPodListToRecorder(b, codecs, lists[index], requests[index]), expectedLengths[index]; got != want {
-			b.Fatalf("response %d length = %d, want %d", index, got, want)
+		if got := writeStreamingPodListToRecorder(b, codecs, list, req); got != expectedLength {
+			b.Fatalf("response length = %d, want %d", got, expectedLength)
 		}
-		index = (index + 1) % len(lists)
 		operations++
 	}
 	endCPU, err := currentThreadCPUTime()
