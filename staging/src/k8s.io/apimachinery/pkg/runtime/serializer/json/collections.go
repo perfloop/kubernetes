@@ -34,6 +34,7 @@ import (
 
 var (
 	rawExtensionObjectType = reflect.TypeOf(runtime.RawExtension{})
+	objectSliceType        = reflect.TypeOf([]runtime.Object{})
 	objectType             = reflect.TypeOf((*runtime.Object)(nil)).Elem()
 )
 
@@ -97,10 +98,24 @@ func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, reflect
 	if err != nil {
 		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, err
 	}
+	if items.Type().Elem() == rawExtensionObjectType {
+		rawItems, err := meta.ExtractList(list)
+		if err != nil {
+			return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, err
+		}
+		if listType.Field(2).Tag.Get("json") != "items" {
+			return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf(`expected Items json field tag to be "items"`)
+		}
+		return typeMeta, listMeta, reflect.ValueOf(rawItems), nil
+	}
+	// Snapshot the slice header before invoking the caller's writer or an item
+	// marshaler. This retains ExtractList's item sequence without allocating an
+	// intermediate []runtime.Object.
+	items = items.Slice(0, items.Len())
 	if items.Len() > 0 {
 		elemType := items.Type().Elem()
 		implementsObject := elemType.Implements(objectType) || reflect.PointerTo(elemType).Implements(objectType)
-		if elemType != rawExtensionObjectType && !implementsObject {
+		if !implementsObject {
 			return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf("expected Items elements to implement runtime.Object")
 		}
 	}
@@ -158,6 +173,9 @@ func (e *streamEncoder) encodeList(typeMeta metav1.TypeMeta, listMeta metav1.Lis
 }
 
 func (e *streamEncoder) encodeItems(items reflect.Value) error {
+	if items.Type() == objectSliceType {
+		return e.encodeItemsObjectSlice(items.Interface().([]runtime.Object))
+	}
 	if items.IsNil() {
 		return e.encodeKeyValuePair("items", nil, nil)
 	}
@@ -166,7 +184,6 @@ func (e *streamEncoder) encodeItems(items reflect.Value) error {
 	}
 	comma := []byte(",")
 	elemType := items.Type().Elem()
-	isRawExtension := elemType == rawExtensionObjectType
 	implementsObject := elemType.Implements(objectType)
 	for i := 0; i < items.Len(); i++ {
 		if i > 0 {
@@ -177,21 +194,34 @@ func (e *streamEncoder) encodeItems(items reflect.Value) error {
 		raw := items.Index(i)
 		var item runtime.Object
 		switch {
-		case isRawExtension:
-			extension := raw.Interface().(runtime.RawExtension)
-			switch {
-			case extension.Object != nil:
-				item = extension.Object
-			case extension.Raw != nil:
-				// TODO: Set ContentEncoding and ContentType correctly.
-				item = &runtime.Unknown{Raw: extension.Raw}
-			}
 		case implementsObject:
 			item = raw.Interface().(runtime.Object)
 		default:
 			var ok bool
 			if item, ok = raw.Addr().Interface().(runtime.Object); !ok {
 				return fmt.Errorf("item[%v]: Expected object, got %#v(%s)", i, raw.Interface(), raw.Kind())
+			}
+		}
+		if err := e.encodeValue(item, nil); err != nil {
+			return err
+		}
+	}
+	_, err := e.w.Write([]byte("]"))
+	return err
+}
+
+func (e *streamEncoder) encodeItemsObjectSlice(items []runtime.Object) error {
+	if items == nil {
+		return e.encodeKeyValuePair("items", nil, nil)
+	}
+	if _, err := e.w.Write([]byte(`"items":[`)); err != nil {
+		return err
+	}
+	comma := []byte(",")
+	for i, item := range items {
+		if i > 0 {
+			if _, err := e.w.Write(comma); err != nil {
+				return err
 			}
 		}
 		if err := e.encodeValue(item, nil); err != nil {

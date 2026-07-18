@@ -40,6 +40,8 @@ func TestCollectionsEncoding(t *testing.T) {
 	t.Run("Streaming", func(t *testing.T) {
 		testCollectionsEncoding(t, NewSerializerWithOptions(DefaultMetaFactory, nil, nil, SerializerOptions{StreamingCollectionsEncoding: true}), true)
 	})
+	testStreamingTypedListSnapshotsItemsBeforeWriterCallback(t)
+	testStreamingRawExtensionListSnapshotsItemsBeforeWriterCallback(t)
 }
 
 // testCollectionsEncoding should provide comprehensive tests to validate streaming implementation of encoder.

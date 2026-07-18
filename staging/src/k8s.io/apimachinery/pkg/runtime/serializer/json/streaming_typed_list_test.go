@@ -18,6 +18,8 @@ package json
 
 import (
 	"bytes"
+	stdjson "encoding/json"
+	"reflect"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,6 +35,41 @@ type rawExtensionList struct {
 
 func (l *rawExtensionList) DeepCopyObject() runtime.Object {
 	return l
+}
+
+type mutateAfterFirstWriteBuffer struct {
+	bytes.Buffer
+	mutate func()
+	writes int
+}
+
+func (b *mutateAfterFirstWriteBuffer) Write(p []byte) (int, error) {
+	n, err := b.Buffer.Write(p)
+	if b.writes == 0 {
+		b.mutate()
+	}
+	b.writes++
+	return n, err
+}
+
+func streamingItemNames(t *testing.T, data []byte) []string {
+	t.Helper()
+
+	var output struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+		} `json:"items"`
+	}
+	if err := stdjson.Unmarshal(data, &output); err != nil {
+		t.Fatalf("decode streaming output: %v", err)
+	}
+	names := make([]string, len(output.Items))
+	for i := range output.Items {
+		names[i] = output.Items[i].Metadata.Name
+	}
+	return names
 }
 
 func TestStreamingRawExtensionListMatchesNormal(t *testing.T) {
@@ -63,5 +100,51 @@ func TestStreamingRawExtensionListMatchesNormal(t *testing.T) {
 	}
 	if got, want := streamingBuffer.String(), normalBuffer.String(); got != want {
 		t.Errorf("streaming output differs from normal output:\nstreaming: %s\nnormal: %s", got, want)
+	}
+}
+
+func testStreamingTypedListSnapshotsItemsBeforeWriterCallback(t *testing.T) {
+	list := &testapigroupv1.CarpList{
+		Items: []testapigroupv1.Carp{
+			{ObjectMeta: metav1.ObjectMeta{Name: "first"}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "second"}},
+		},
+	}
+	writer := &mutateAfterFirstWriteBuffer{
+		mutate: func() {
+			list.Items = []testapigroupv1.Carp{{ObjectMeta: metav1.ObjectMeta{Name: "replacement"}}}
+		},
+	}
+	streaming := NewSerializerWithOptions(DefaultMetaFactory, nil, nil, SerializerOptions{StreamingCollectionsEncoding: true})
+	if err := streaming.Encode(list, writer); err != nil {
+		t.Fatalf("streaming encode: %v", err)
+	}
+	if writer.writes == 0 {
+		t.Fatal("streaming encoder did not write")
+	}
+
+	got := streamingItemNames(t, writer.Bytes())
+	if want := []string{"first", "second"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("streaming item sequence = %v, want %v", got, want)
+	}
+}
+
+func testStreamingRawExtensionListSnapshotsItemsBeforeWriterCallback(t *testing.T) {
+	list := &rawExtensionList{
+		Items: []runtime.RawExtension{{Raw: []byte(`{"metadata":{"name":"first"}}`)}},
+	}
+	writer := &mutateAfterFirstWriteBuffer{
+		mutate: func() {
+			list.Items[0].Raw = []byte(`{"metadata":{"name":"replacement"}}`)
+		},
+	}
+	streaming := NewSerializerWithOptions(DefaultMetaFactory, nil, nil, SerializerOptions{StreamingCollectionsEncoding: true})
+	if err := streaming.Encode(list, writer); err != nil {
+		t.Fatalf("streaming encode: %v", err)
+	}
+
+	got := streamingItemNames(t, writer.Bytes())
+	if want := []string{"first"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("streaming item sequence = %v, want %v", got, want)
 	}
 }
