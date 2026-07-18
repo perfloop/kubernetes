@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 	"sort"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -29,6 +30,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+)
+
+var (
+	rawExtensionObjectType = reflect.TypeOf(runtime.RawExtension{})
+	objectType             = reflect.TypeOf((*runtime.Object)(nil)).Elem()
 )
 
 func streamEncodeCollections(obj runtime.Object, w io.Writer) (bool, error) {
@@ -52,43 +58,54 @@ func streamEncodeCollections(obj runtime.Object, w io.Writer) (bool, error) {
 // * Validate json tags to prevent incompatibility with json standard package.
 // * ListMetaAccessor doesn't distinguish empty from nil value.
 // * TypeAccessort reparsing "apiVersion" and serializing it with "{group}/{version}"
-func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, []runtime.Object, error) {
+func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, reflect.Value, error) {
 	listValue, err := conversion.EnforcePtr(list)
 	if err != nil {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, nil, err
+		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, err
 	}
 	listType := listValue.Type()
 	if listType.NumField() != 3 {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, nil, fmt.Errorf("expected ListType to have 3 fields")
+		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf("expected ListType to have 3 fields")
 	}
 	// TypeMeta
 	typeMeta, ok := listValue.Field(0).Interface().(metav1.TypeMeta)
 	if !ok {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, nil, fmt.Errorf("expected TypeMeta field to have TypeMeta type")
+		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf("expected TypeMeta field to have TypeMeta type")
 	}
 	if !listType.Field(0).Anonymous {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, nil, fmt.Errorf(`expected TypeMeta json field tag to be embedded`)
+		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf(`expected TypeMeta json field tag to be embedded`)
 	}
 	if jsonTag, jsonTagExists := listType.Field(0).Tag.Lookup("json"); !jsonTagExists {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, nil, fmt.Errorf(`expected TypeMeta json field tag`)
+		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf(`expected TypeMeta json field tag`)
 	} else if jsonTag != "" && jsonTag != ",inline" {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, nil, fmt.Errorf(`expected TypeMeta json field tag to be "" or ",inline"`)
+		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf(`expected TypeMeta json field tag to be "" or ",inline"`)
 	}
 	// ListMeta
 	listMeta, ok := listValue.Field(1).Interface().(metav1.ListMeta)
 	if !ok {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, nil, fmt.Errorf("expected ListMeta field to have ListMeta type")
+		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf("expected ListMeta field to have ListMeta type")
 	}
 	if listType.Field(1).Tag.Get("json") != "metadata,omitempty" {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, nil, fmt.Errorf(`expected ListMeta json field tag to be "metadata,omitempty"`)
+		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf(`expected ListMeta json field tag to be "metadata,omitempty"`)
 	}
 	// Items
-	items, err := meta.ExtractList(list)
+	itemsPtr, err := meta.GetItemsPtr(list)
 	if err != nil {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, nil, err
+		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, err
+	}
+	items, err := conversion.EnforcePtr(itemsPtr)
+	if err != nil {
+		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, err
+	}
+	if items.Len() > 0 {
+		elemType := items.Type().Elem()
+		implementsObject := elemType.Implements(objectType) || reflect.PointerTo(elemType).Implements(objectType)
+		if elemType != rawExtensionObjectType && !implementsObject {
+			return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf("expected Items elements to implement runtime.Object")
+		}
 	}
 	if listType.Field(2).Tag.Get("json") != "items" {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, nil, fmt.Errorf(`expected Items json field tag to be "items"`)
+		return metav1.TypeMeta{}, metav1.ListMeta{}, reflect.Value{}, fmt.Errorf(`expected Items json field tag to be "items"`)
 	}
 	return typeMeta, listMeta, items, nil
 }
@@ -107,7 +124,7 @@ func newStreamEncoder(w io.Writer) *streamEncoder {
 	return e
 }
 
-func (e *streamEncoder) encodeList(typeMeta metav1.TypeMeta, listMeta metav1.ListMeta, items []runtime.Object) error {
+func (e *streamEncoder) encodeList(typeMeta metav1.TypeMeta, listMeta metav1.ListMeta, items reflect.Value) error {
 	// Start
 	if _, err := e.w.Write([]byte(`{`)); err != nil {
 		return err
@@ -131,7 +148,7 @@ func (e *streamEncoder) encodeList(typeMeta metav1.TypeMeta, listMeta metav1.Lis
 	}
 
 	// Items
-	if err := e.encodeItemsObjectSlice(items); err != nil {
+	if err := e.encodeItems(items); err != nil {
 		return err
 	}
 
@@ -140,29 +157,48 @@ func (e *streamEncoder) encodeList(typeMeta metav1.TypeMeta, listMeta metav1.Lis
 	return err
 }
 
-func (e *streamEncoder) encodeItemsObjectSlice(items []runtime.Object) (err error) {
-	if items == nil {
-		err := e.encodeKeyValuePair("items", nil, nil)
+func (e *streamEncoder) encodeItems(items reflect.Value) error {
+	if items.IsNil() {
+		return e.encodeKeyValuePair("items", nil, nil)
+	}
+	if _, err := e.w.Write([]byte(`"items":[`)); err != nil {
 		return err
 	}
-	_, err = e.w.Write([]byte(`"items":[`))
-	if err != nil {
-		return err
-	}
-	suffix := []byte(",")
-	for i, item := range items {
-		if i == len(items)-1 {
-			suffix = nil
+	comma := []byte(",")
+	elemType := items.Type().Elem()
+	isRawExtension := elemType == rawExtensionObjectType
+	implementsObject := elemType.Implements(objectType)
+	for i := 0; i < items.Len(); i++ {
+		if i > 0 {
+			if _, err := e.w.Write(comma); err != nil {
+				return err
+			}
 		}
-		err := e.encodeValue(item, suffix)
-		if err != nil {
+		raw := items.Index(i)
+		var item runtime.Object
+		switch {
+		case isRawExtension:
+			extension := raw.Interface().(runtime.RawExtension)
+			switch {
+			case extension.Object != nil:
+				item = extension.Object
+			case extension.Raw != nil:
+				// TODO: Set ContentEncoding and ContentType correctly.
+				item = &runtime.Unknown{Raw: extension.Raw}
+			}
+		case implementsObject:
+			item = raw.Interface().(runtime.Object)
+		default:
+			var ok bool
+			if item, ok = raw.Addr().Interface().(runtime.Object); !ok {
+				return fmt.Errorf("item[%v]: Expected object, got %#v(%s)", i, raw.Interface(), raw.Kind())
+			}
+		}
+		if err := e.encodeValue(item, nil); err != nil {
 			return err
 		}
 	}
-	_, err = e.w.Write([]byte("]"))
-	if err != nil {
-		return err
-	}
+	_, err := e.w.Write([]byte("]"))
 	return err
 }
 
