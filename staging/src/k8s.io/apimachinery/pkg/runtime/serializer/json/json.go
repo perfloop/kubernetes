@@ -146,10 +146,8 @@ func (s *Serializer) Decode(originalData []byte, gvk *schema.GroupVersionKind, i
 		// interpretation, so its strict conversion can be reused there. Other
 		// targets can return after metadata or destination resolution, so retain
 		// their regular conversion.
-		strictYAMLConversion := s.options.Strict && isUnstructured
-
 		var err error
-		if strictYAMLConversion {
+		if s.options.Strict && isUnstructured {
 			strictYAMLConverted = true
 			data, strictErr = yaml.YAMLToJSONStrict(originalData)
 			if strictErr != nil {
