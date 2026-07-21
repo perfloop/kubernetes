@@ -137,12 +137,20 @@ func gvkWithDefaults(actual, defaultGVK schema.GroupVersionKind) schema.GroupVer
 // The gvk calculate priority will be originalData > default gvk > into
 func (s *Serializer) Decode(originalData []byte, gvk *schema.GroupVersionKind, into runtime.Object) (runtime.Object, *schema.GroupVersionKind, error) {
 	data := originalData
+	var strictErr error
 	if s.options.Yaml {
-		altered, err := yaml.YAMLToJSON(data)
+		var err error
+		if s.options.Strict {
+			data, strictErr = yaml.YAMLToJSONStrict(originalData)
+			if strictErr != nil {
+				data, err = yaml.YAMLToJSON(originalData)
+			}
+		} else {
+			data, err = yaml.YAMLToJSON(originalData)
+		}
 		if err != nil {
 			return nil, nil, err
 		}
-		data = altered
 	}
 
 	actual, err := s.meta.Interpret(data)
@@ -166,7 +174,7 @@ func (s *Serializer) Decode(originalData []byte, gvk *schema.GroupVersionKind, i
 		types, _, err := s.typer.ObjectKinds(into)
 		switch {
 		case runtime.IsNotRegisteredError(err), isUnstructured:
-			strictErrs, err := s.unmarshal(into, data, originalData)
+			strictErrs, err := s.unmarshal(into, data, strictErr)
 			if err != nil {
 				return nil, actual, err
 			}
@@ -206,7 +214,7 @@ func (s *Serializer) Decode(originalData []byte, gvk *schema.GroupVersionKind, i
 		return nil, actual, err
 	}
 
-	strictErrs, err := s.unmarshal(obj, data, originalData)
+	strictErrs, err := s.unmarshal(obj, data, strictErr)
 	if err != nil {
 		return nil, actual, err
 	} else if len(strictErrs) > 0 {
@@ -264,7 +272,7 @@ func (s *Serializer) IsStrict() bool {
 	return s.options.Strict
 }
 
-func (s *Serializer) unmarshal(into runtime.Object, data, originalData []byte) (strictErrs []error, err error) {
+func (s *Serializer) unmarshal(into runtime.Object, data []byte, yamlStrictErr error) (strictErrs []error, err error) {
 	// If the deserializer is non-strict, return here.
 	if !s.options.Strict {
 		if err := kjson.UnmarshalCaseSensitivePreserveInts(data, into); err != nil {
@@ -273,14 +281,11 @@ func (s *Serializer) unmarshal(into runtime.Object, data, originalData []byte) (
 		return nil, nil
 	}
 
-	if s.options.Yaml {
-		// In strict mode pass the original data through the YAMLToJSONStrict converter.
-		// This is done to catch duplicate fields in YAML that would have been dropped in the original YAMLToJSON conversion.
-		// TODO: rework YAMLToJSONStrict to return warnings about duplicate fields without terminating so we don't have to do this twice.
-		_, err := yaml.YAMLToJSONStrict(originalData)
-		if err != nil {
-			strictErrs = append(strictErrs, err)
-		}
+	if yamlStrictErr != nil {
+		// Decode already converted the YAML with YAMLToJSONStrict. A duplicate-field
+		// error requires decoding the regular YAML result, then returning the saved
+		// strict diagnostic to preserve the existing Decode behavior.
+		strictErrs = append(strictErrs, yamlStrictErr)
 	}
 
 	var strictJSONErrs []error
