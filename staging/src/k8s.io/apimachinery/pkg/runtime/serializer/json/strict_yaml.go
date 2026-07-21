@@ -95,11 +95,15 @@ func mayStartWithYAMLSequenceOrDocument(data []byte) bool {
 		if data[0] != '#' {
 			return data[0] == '-'
 		}
-		lineEnd := bytes.IndexByte(data, '\n')
+		lineEnd := bytes.IndexAny(data, "\r\n")
 		if lineEnd == -1 {
 			return false
 		}
+		lineBreak := data[lineEnd]
 		data = data[lineEnd+1:]
+		if lineBreak == '\r' && len(data) > 0 && data[0] == '\n' {
+			data = data[1:]
+		}
 	}
 }
 
@@ -163,6 +167,10 @@ func yamlMapKeyToString(key, value interface{}) (string, error) {
 		return strconv.Itoa(typedKey), nil
 	case int64:
 		return strconv.FormatInt(typedKey, 10), nil
+	case uint64:
+		// Delegate this uncommon key type to the authoritative converter rather
+		// than duplicating its version-specific conversion behavior.
+		return "", errYAMLConversionFallback
 	case float64:
 		keyString := strconv.FormatFloat(typedKey, 'g', -1, 32)
 		switch keyString {

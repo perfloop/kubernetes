@@ -105,8 +105,10 @@ func TestYAMLToJSONWithDuplicateDetectionFallsBackForRootSequences(t *testing.T)
 		[]byte("- key: value\n"),
 		[]byte("---\n- key: value\n"),
 		[]byte("# a sequence follows\n- key: value\n"),
+		[]byte("# a sequence follows\r- key: value\r"),
 		[]byte("\xef\xbb\xbf\n- key: value\n"),
 		[]byte("\xef\xbb\xbf\n# a sequence follows\n---\n- key: value\n"),
+		[]byte("\xef\xbb\xbf# a sequence follows\r- key: value\r"),
 	} {
 		if _, _, ok, err := yamlToJSONWithDuplicateDetection(data); err != nil || ok {
 			t.Fatalf("yamlToJSONWithDuplicateDetection(%q) returned err=%v ok=%t for a root sequence", data, err, ok)
@@ -156,6 +158,13 @@ func TestYAMLToJSONWithDuplicateDetectionReturnsUnsupportedScalarMapKeyError(t *
 	_, _, ok, actualErr := yamlToJSONWithDuplicateDetection(data)
 	if ok || expectedErr == nil || actualErr == nil || actualErr.Error() != expectedErr.Error() {
 		t.Fatalf("yamlToJSONWithDuplicateDetection returned ok=%t err=%v, want %v", ok, actualErr, expectedErr)
+	}
+}
+
+func TestYAMLToJSONWithDuplicateDetectionFallsBackForUint64MapKey(t *testing.T) {
+	data := []byte("18446744073709551615: retained\n")
+	if _, _, ok, err := yamlToJSONWithDuplicateDetection(data); err != nil || ok {
+		t.Fatalf("yamlToJSONWithDuplicateDetection returned err=%v ok=%t for a uint64 map key", err, ok)
 	}
 }
 
