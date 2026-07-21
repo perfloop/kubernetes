@@ -19,10 +19,9 @@ package json_test
 import (
 	"bytes"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
-
-	"sigs.k8s.io/yaml"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -72,19 +71,30 @@ func requireConfigMapData(t testing.TB, into *unstructured.Unstructured, key str
 	}
 }
 
-func TestStrictYAMLConversionMatchesRegular(t *testing.T) {
+func TestDecodeStrictYAMLMatchesNonStrictYAML(t *testing.T) {
 	data := strictYAMLConfigMap(strictYAMLDecodePayloadSize, 0)
 
-	regular, err := yaml.YAMLToJSON(data)
+	strictInto := &unstructured.Unstructured{}
+	strictObj, strictGVK, err := newYAMLDecoder(true).Decode(data, nil, strictInto)
 	if err != nil {
-		t.Fatalf("YAMLToJSON returned error: %v", err)
+		t.Fatalf("strict Decode returned error: %v", err)
 	}
-	strict, err := yaml.YAMLToJSONStrict(data)
+	requireDecodedConfigMap(t, strictObj, strictGVK, strictInto)
+	requireConfigMapData(t, strictInto, "key-00000")
+
+	nonStrictInto := &unstructured.Unstructured{}
+	nonStrictObj, nonStrictGVK, err := newYAMLDecoder(false).Decode(data, nil, nonStrictInto)
 	if err != nil {
-		t.Fatalf("YAMLToJSONStrict returned error: %v", err)
+		t.Fatalf("non-strict Decode returned error: %v", err)
 	}
-	if !bytes.Equal(strict, regular) {
-		t.Fatal("YAMLToJSONStrict and YAMLToJSON returned different JSON for valid YAML")
+	requireDecodedConfigMap(t, nonStrictObj, nonStrictGVK, nonStrictInto)
+	requireConfigMapData(t, nonStrictInto, "key-00000")
+
+	if *strictGVK != *nonStrictGVK {
+		t.Fatalf("strict Decode returned GVK %v, non-strict Decode returned %v", strictGVK, nonStrictGVK)
+	}
+	if !reflect.DeepEqual(strictInto.Object, nonStrictInto.Object) {
+		t.Fatal("strict and non-strict Decode returned different objects for valid YAML")
 	}
 }
 
