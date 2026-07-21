@@ -581,6 +581,7 @@ func TestListItemIterator(t *testing.T) {
 		payload = nil
 		list = nil
 
+		// Keep the iterator live through GC while no reference to the list remains.
 		for i := 0; i < 10 && payloadRef.Value() != nil; i++ {
 			goruntime.GC()
 		}
