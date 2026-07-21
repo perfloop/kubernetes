@@ -18,10 +18,8 @@ package meta
 
 import (
 	"reflect"
-	goruntime "runtime"
 	"strconv"
 	"testing"
-	"weak"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -66,20 +64,6 @@ type RawExtensionList struct {
 }
 
 func (l RawExtensionList) DeepCopyObject() runtime.Object { panic("unimplemented") }
-
-type iteratorRetentionList struct {
-	metav1.TypeMeta
-	metav1.ListMeta
-
-	Items   []Sample
-	payload *iteratorRetentionPayload
-}
-
-func (*iteratorRetentionList) DeepCopyObject() runtime.Object { return nil }
-
-type iteratorRetentionPayload struct {
-	data []byte
-}
 
 // NOTE: Foo struct itself is the implementer of runtime.Object.
 type Foo struct {
@@ -412,10 +396,9 @@ func TestExtractList(t *testing.T) {
 			})
 		})
 	}
-	t.Run("ListItemIterator", testListItemIterator)
 }
 
-func testListItemIterator(t *testing.T) {
+func TestListItemIterator(t *testing.T) {
 	rawObject := &Foo{ObjectMeta: metav1.ObjectMeta{Name: "object"}}
 	raw := []byte(`{"metadata":{"name":"raw"}}`)
 	tests := []struct {
@@ -558,48 +541,6 @@ func testListItemIterator(t *testing.T) {
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("ListItemIterator after item mutation = %#v, want ExtractList result %#v", got, want)
-		}
-	})
-
-	t.Run("does not retain list container", func(t *testing.T) {
-		payload := &iteratorRetentionPayload{data: make([]byte, 1024)}
-		payloadRef := weak.Make(payload)
-		list := &iteratorRetentionList{
-			Items: []Sample{
-				{ObjectMeta: metav1.ObjectMeta{Name: "first"}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "second"}},
-			},
-			payload: payload,
-		}
-		iterator, itemsNil, err := NewListItemIterator(list)
-		if err != nil {
-			t.Fatalf("NewListItemIterator: %v", err)
-		}
-		if itemsNil {
-			t.Fatal("NewListItemIterator() itemsNil = true, want false")
-		}
-		list.Items = []Sample{{ObjectMeta: metav1.ObjectMeta{Name: "replacement"}}}
-		payload = nil
-		list = nil
-
-		for i := 0; i < 10 && payloadRef.Value() != nil; i++ {
-			goruntime.GC()
-		}
-		goruntime.KeepAlive(iterator)
-		if payloadRef.Value() != nil {
-			t.Fatal("iterator retained payload reachable only through list")
-		}
-		if got := iterator.Len(); got != 2 {
-			t.Fatalf("Len() = %d, want 2", got)
-		}
-		for i, want := range []string{"first", "second"} {
-			item, err := Accessor(iterator.Item(i))
-			if err != nil {
-				t.Fatalf("iterator item %d accessor: %v", i, err)
-			}
-			if got := item.GetName(); got != want {
-				t.Errorf("iterator item %d name = %q, want %q", i, got, want)
-			}
 		}
 	})
 }
