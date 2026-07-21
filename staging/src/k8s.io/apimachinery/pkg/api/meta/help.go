@@ -227,7 +227,7 @@ func NewListItemIterator(obj runtime.Object) (ListItemIterator, bool, error) {
 	if err != nil || itemsNil {
 		return ListItemIterator{}, itemsNil, err
 	}
-	if err := extractor.validate(); err != nil {
+	if err := extractor.validate(obj); err != nil {
 		return ListItemIterator{}, false, err
 	}
 	if !extractor.requiresSnapshot() {
@@ -319,7 +319,6 @@ func extractList(obj runtime.Object, allocNew bool) ([]runtime.Object, error) {
 }
 
 type listItemExtractor struct {
-	obj              runtime.Object
 	items            reflect.Value
 	isRawExtension   bool
 	implementsObject bool
@@ -339,7 +338,6 @@ func newListItemExtractor(obj runtime.Object) (listItemExtractor, bool, error) {
 	}
 	elemType := items.Type().Elem()
 	return listItemExtractor{
-		obj:              obj,
 		items:            items,
 		isRawExtension:   elemType == rawExtensionObjectType,
 		implementsObject: elemType.Implements(objectType),
@@ -350,7 +348,7 @@ func (e listItemExtractor) requiresSnapshot() bool {
 	return e.isRawExtension || e.implementsObject
 }
 
-func (e listItemExtractor) validate() error {
+func (e listItemExtractor) validate(obj runtime.Object) error {
 	if e.items.Len() == 0 || e.requiresSnapshot() {
 		return nil
 	}
@@ -358,7 +356,7 @@ func (e listItemExtractor) validate() error {
 	if raw.Addr().Type().Implements(objectType) {
 		return nil
 	}
-	return e.itemError(0, raw)
+	return fmt.Errorf("%v: item[%v]: Expected object, got %#v(%s)", obj, 0, raw.Interface(), raw.Kind())
 }
 
 func (e listItemExtractor) item(i int) runtime.Object {
@@ -380,10 +378,6 @@ func (e listItemExtractor) item(i int) runtime.Object {
 	default:
 		return raw.Addr().Interface().(runtime.Object)
 	}
-}
-
-func (e listItemExtractor) itemError(i int, raw reflect.Value) error {
-	return fmt.Errorf("%v: item[%v]: Expected object, got %#v(%s)", e.obj, i, raw.Interface(), raw.Kind())
 }
 
 var (
