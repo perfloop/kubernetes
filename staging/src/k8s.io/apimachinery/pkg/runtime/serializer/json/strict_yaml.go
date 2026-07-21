@@ -19,6 +19,7 @@ package json
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -30,18 +31,32 @@ import (
 // duplicate keys long enough to detect them. It returns ok=false for YAML
 // constructs that must use sigs.k8s.io/yaml's general conversion instead.
 func yamlToJSONWithDuplicateDetection(data []byte) ([]byte, bool, bool, error) {
-	if mayContainYAMLMergeSyntax(data) {
+	if mayRequireRegularYAMLConversion(data) {
 		return nil, false, false, nil
 	}
 
+	// Decoding into MapSlice also makes yaml.v2 retain MapSlice for nested
+	// mappings, so recursive conversion observes every mapping entry and its
+	// duplicate keys (see TestYAMLToJSONWithDuplicateDetectionConvertsNestedMappings).
 	var yamlObj yamlv2.MapSlice
-	if err := yamlv2.Unmarshal(data, &yamlObj); err != nil || len(yamlObj) == 0 {
+	if err := yamlv2.Unmarshal(data, &yamlObj); err != nil {
+		var typeErr *yamlv2.TypeError
+		if !errors.As(err, &typeErr) {
+			// YAMLToJSON returns parser errors before conversion, and MapSlice
+			// observes the same parser error without needing a second parse.
+			return nil, false, false, err
+		}
+		return nil, false, false, nil
+	} else if len(yamlObj) == 0 {
 		return nil, false, false, nil
 	}
 
 	jsonObj, hasDuplicate, err := yamlToJSONableObject(yamlObj)
 	if err != nil {
-		return nil, false, false, nil
+		if errors.Is(err, errYAMLConversionFallback) {
+			return nil, false, false, nil
+		}
+		return nil, false, false, err
 	}
 	jsonData, err := json.Marshal(jsonObj)
 	if err != nil {
@@ -53,13 +68,16 @@ func yamlToJSONWithDuplicateDetection(data []byte) ([]byte, bool, bool, error) {
 	return jsonData, hasDuplicate, true, nil
 }
 
-// mayContainYAMLMergeSyntax conservatively selects the regular converter for
-// every source spelling that yaml.v2 can resolve as a merge key. A merge key
-// has scalar value "<<" (which requires '<' or an escape), or an explicit
-// merge tag (which requires '!' or a tag directive '%').
-func mayContainYAMLMergeSyntax(data []byte) bool {
-	return bytes.ContainsAny(data, "<!\\%")
+// mayRequireRegularYAMLConversion conservatively selects the regular
+// converter for source syntax that MapSlice cannot prove equivalent. A merge
+// key has scalar value "<<" (requiring '<' or an escape), or an explicit merge
+// tag (requiring '!' or a tag directive '%'). Complex map keys require an
+// explicit-key, flow-collection, or alias indicator.
+func mayRequireRegularYAMLConversion(data []byte) bool {
+	return bytes.ContainsAny(data, "<!\\%?[{*")
 }
+
+var errYAMLConversionFallback = errors.New("YAML conversion requires the regular converter")
 
 // yamlToJSONableObject mirrors sigs.k8s.io/yaml's conversion with no target
 // type while retaining duplicate information from yaml.MapSlice.
@@ -76,7 +94,7 @@ func yamlToJSONableObject(yamlObj interface{}) (interface{}, bool, error) {
 				return nil, false, err
 			}
 			if previousKey, found := jsonKeys[keyString]; found && !reflect.DeepEqual(previousKey, item.Key) {
-				return nil, false, fmt.Errorf("multiple YAML map keys convert to JSON key %q", keyString)
+				return nil, false, fmt.Errorf("%w: multiple YAML map keys convert to JSON key %q", errYAMLConversionFallback, keyString)
 			}
 			jsonKeys[keyString] = item.Key
 			if _, found := seenKeys[item.Key]; found {
@@ -105,7 +123,7 @@ func yamlToJSONableObject(yamlObj interface{}) (interface{}, bool, error) {
 		}
 		return array, hasDuplicate, nil
 	case map[interface{}]interface{}, map[string]interface{}:
-		return nil, false, fmt.Errorf("unexpected YAML map type %T", yamlObj)
+		return nil, false, fmt.Errorf("%w: unexpected YAML map type %T", errYAMLConversionFallback, yamlObj)
 	default:
 		return yamlObj, false, nil
 	}

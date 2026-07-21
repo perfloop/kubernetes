@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"testing"
 
+	yamlv2 "go.yaml.in/yaml/v2"
 	"sigs.k8s.io/yaml"
 )
 
@@ -44,6 +45,41 @@ func TestYAMLToJSONWithDuplicateDetection(t *testing.T) {
 	}
 }
 
+func TestYAMLToJSONWithDuplicateDetectionConvertsNestedMappings(t *testing.T) {
+	data := []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: nested\ndata:\n  value: retained\n")
+
+	var yamlObj yamlv2.MapSlice
+	if err := yamlv2.Unmarshal(data, &yamlObj); err != nil {
+		t.Fatalf("yaml.Unmarshal: %v", err)
+	}
+
+	var nestedMappings int
+	for _, item := range yamlObj {
+		if item.Key != "metadata" && item.Key != "data" {
+			continue
+		}
+		if _, ok := item.Value.(yamlv2.MapSlice); !ok {
+			t.Fatalf("yaml MapSlice value for %q has type %T, want yaml.MapSlice", item.Key, item.Value)
+		}
+		nestedMappings++
+	}
+	if nestedMappings != 2 {
+		t.Fatalf("yaml MapSlice found %d nested mappings, want 2", nestedMappings)
+	}
+
+	expected, err := yaml.YAMLToJSONStrict(data)
+	if err != nil {
+		t.Fatalf("YAMLToJSONStrict: %v", err)
+	}
+	actual, hasDuplicate, ok, err := yamlToJSONWithDuplicateDetection(data)
+	if err != nil || !ok || hasDuplicate {
+		t.Fatalf("yamlToJSONWithDuplicateDetection returned err=%v ok=%t duplicate=%t", err, ok, hasDuplicate)
+	}
+	if !bytes.Equal(actual, expected) {
+		t.Fatalf("yamlToJSONWithDuplicateDetection = %s, want %s", actual, expected)
+	}
+}
+
 func TestYAMLToJSONWithDuplicateDetectionFallsBackForNonMappings(t *testing.T) {
 	for _, data := range [][]byte{[]byte(""), []byte("null\n"), []byte("[]\n"), []byte("{}\n")} {
 		if _, _, ok, err := yamlToJSONWithDuplicateDetection(data); err != nil || ok {
@@ -61,6 +97,36 @@ func TestYAMLToJSONWithDuplicateDetectionFallsBackForMergeSyntax(t *testing.T) {
 		if _, _, ok, err := yamlToJSONWithDuplicateDetection(data); err != nil || ok {
 			t.Fatalf("yamlToJSONWithDuplicateDetection(%q) returned err=%v ok=%t for merge syntax", data, err, ok)
 		}
+	}
+}
+
+func TestYAMLToJSONWithDuplicateDetectionFallsBackForComplexMapKeySyntax(t *testing.T) {
+	for _, data := range [][]byte{
+		[]byte("? [key]\n: value\n"),
+		[]byte("{[key]: value}\n"),
+		[]byte("key: &key value\n? *key\n: value\n"),
+	} {
+		if _, _, ok, err := yamlToJSONWithDuplicateDetection(data); err != nil || ok {
+			t.Fatalf("yamlToJSONWithDuplicateDetection(%q) returned err=%v ok=%t for complex map key syntax", data, err, ok)
+		}
+	}
+}
+
+func TestYAMLToJSONWithDuplicateDetectionReturnsParserError(t *testing.T) {
+	data := []byte("apiVersion: v1\nkind: \"unterminated\n")
+	_, expectedErr := yaml.YAMLToJSON(data)
+	_, _, ok, actualErr := yamlToJSONWithDuplicateDetection(data)
+	if ok || expectedErr == nil || actualErr == nil || actualErr.Error() != expectedErr.Error() {
+		t.Fatalf("yamlToJSONWithDuplicateDetection returned ok=%t err=%v, want %v", ok, actualErr, expectedErr)
+	}
+}
+
+func TestYAMLToJSONWithDuplicateDetectionReturnsUnsupportedScalarMapKeyError(t *testing.T) {
+	data := []byte("null: value\n")
+	_, expectedErr := yaml.YAMLToJSON(data)
+	_, _, ok, actualErr := yamlToJSONWithDuplicateDetection(data)
+	if ok || expectedErr == nil || actualErr == nil || actualErr.Error() != expectedErr.Error() {
+		t.Fatalf("yamlToJSONWithDuplicateDetection returned ok=%t err=%v, want %v", ok, actualErr, expectedErr)
 	}
 }
 
