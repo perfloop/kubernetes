@@ -29,25 +29,36 @@ import (
 // yamlToJSONWithDuplicateDetection converts a YAML mapping while preserving
 // duplicate keys long enough to detect them. It returns ok=false for YAML
 // constructs that must use sigs.k8s.io/yaml's general conversion instead.
-func yamlToJSONWithDuplicateDetection(data []byte) ([]byte, bool, bool) {
-	if bytes.Contains(data, []byte("<<")) {
-		return nil, false, false
+func yamlToJSONWithDuplicateDetection(data []byte) ([]byte, bool, bool, error) {
+	if mayContainYAMLMergeSyntax(data) {
+		return nil, false, false, nil
 	}
 
 	var yamlObj yamlv2.MapSlice
 	if err := yamlv2.Unmarshal(data, &yamlObj); err != nil || len(yamlObj) == 0 {
-		return nil, false, false
+		return nil, false, false, nil
 	}
 
 	jsonObj, hasDuplicate, err := yamlToJSONableObject(yamlObj)
 	if err != nil {
-		return nil, false, false
+		return nil, false, false, nil
 	}
 	jsonData, err := json.Marshal(jsonObj)
 	if err != nil {
-		return nil, false, false
+		// This is the same JSON marshal performed by sigs.k8s.io/yaml after
+		// conversion, so returning it directly avoids reparsing a YAML value
+		// that cannot be represented as JSON (for example, .nan).
+		return nil, false, false, err
 	}
-	return jsonData, hasDuplicate, true
+	return jsonData, hasDuplicate, true, nil
+}
+
+// mayContainYAMLMergeSyntax conservatively selects the regular converter for
+// every source spelling that yaml.v2 can resolve as a merge key. A merge key
+// has scalar value "<<" (which requires '<' or an escape), or an explicit
+// merge tag (which requires '!' or a tag directive '%').
+func mayContainYAMLMergeSyntax(data []byte) bool {
+	return bytes.ContainsAny(data, "<!\\%")
 }
 
 // yamlToJSONableObject mirrors sigs.k8s.io/yaml's conversion with no target

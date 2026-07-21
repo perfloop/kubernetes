@@ -148,9 +148,9 @@ func (s *Serializer) Decode(originalData []byte, gvk *schema.GroupVersionKind, i
 		// resolution, so retain their regular conversion.
 		var err error
 		if s.options.Strict && isUnstructured {
-			data, strictYAMLHasDuplicate, strictYAMLConverted = yamlToJSONWithDuplicateDetection(originalData)
+			data, strictYAMLHasDuplicate, strictYAMLConverted, err = yamlToJSONWithDuplicateDetection(originalData)
 		}
-		if !strictYAMLConverted {
+		if err == nil && !strictYAMLConverted {
 			data, err = yaml.YAMLToJSON(originalData)
 		}
 		if err != nil {
