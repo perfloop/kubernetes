@@ -917,6 +917,13 @@ func TestDecode(t *testing.T) {
 	}
 }
 
+const strictYAMLMetadataTestPayloadSize = 10 * 1024
+
+func newStrictYAMLMetadataTestDecoder() *json.Serializer {
+	scheme := runtime.NewScheme()
+	return json.NewSerializerWithOptions(json.DefaultMetaFactory, nil, scheme, json.SerializerOptions{Yaml: true, Strict: true})
+}
+
 func strictYAMLMetadataRejectDuplicate(size, variant int) []byte {
 	var data bytes.Buffer
 	fmt.Fprintf(&data, "apiVersion:\n  - v1\nkind: ConfigMap\nmetadata:\n  name: strict-yaml-metadata-reject-%d\ndata:\n", variant)
@@ -941,15 +948,15 @@ func requireMetadataInterpretError(t testing.TB, obj runtime.Object, gvk *schema
 }
 
 func TestDecodeStrictYAMLMetadataInterpretError(t *testing.T) {
-	payload := strictYAMLMetadataRejectDuplicate(strictYAMLDecodePayloadSize, 0)
-	obj, gvk, err := newYAMLDecoder(true).Decode(payload, nil, &unstructured.Unstructured{})
+	payload := strictYAMLMetadataRejectDuplicate(strictYAMLMetadataTestPayloadSize, 0)
+	obj, gvk, err := newStrictYAMLMetadataTestDecoder().Decode(payload, nil, &unstructured.Unstructured{})
 	requireMetadataInterpretError(t, obj, gvk, err)
 }
 
 func TestDecodeStrictYAMLDuplicatePreservesLastValue(t *testing.T) {
 	data := []byte("apiVersion: v1\nkind: ConfigMap\ndata:\n  value: first\n  value: second\n")
 	into := &unstructured.Unstructured{}
-	obj, gvk, err := newYAMLDecoder(true).Decode(data, nil, into)
+	obj, gvk, err := newStrictYAMLMetadataTestDecoder().Decode(data, nil, into)
 	if !runtime.IsStrictDecodingError(err) {
 		t.Fatalf("Decode returned %v, want strict decoding error", err)
 	}
@@ -968,7 +975,7 @@ func TestDecodeStrictYAMLDuplicatePreservesLastValue(t *testing.T) {
 func TestDecodeStrictYAMLRootDuplicatePreservesMetadata(t *testing.T) {
 	data := []byte("apiVersion:\n  - v1\napiVersion: v1\nkind: ConfigMap\ndata:\n  value: retained\n")
 	into := &unstructured.Unstructured{}
-	obj, gvk, err := newYAMLDecoder(true).Decode(data, nil, into)
+	obj, gvk, err := newStrictYAMLMetadataTestDecoder().Decode(data, nil, into)
 	if !runtime.IsStrictDecodingError(err) {
 		t.Fatalf("Decode returned %v, want strict decoding error", err)
 	}
@@ -983,7 +990,7 @@ func TestDecodeStrictYAMLRootDuplicatePreservesMetadata(t *testing.T) {
 
 func TestDecodeStrictYAMLConversionErrorPrecedesMetadata(t *testing.T) {
 	data := []byte("apiVersion:\n  - v1\nkind: ConfigMap\nvalue: .nan\nduplicate: first\nduplicate: second\n")
-	obj, gvk, err := newYAMLDecoder(true).Decode(data, nil, &unstructured.Unstructured{})
+	obj, gvk, err := newStrictYAMLMetadataTestDecoder().Decode(data, nil, &unstructured.Unstructured{})
 	if obj != nil || gvk != nil {
 		t.Fatalf("Decode returned obj=%T gvk=%v with a conversion error", obj, gvk)
 	}

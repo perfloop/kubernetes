@@ -100,6 +100,18 @@ func TestYAMLToJSONWithDuplicateDetectionFallsBackForMergeSyntax(t *testing.T) {
 	}
 }
 
+func TestYAMLToJSONWithDuplicateDetectionFallsBackForRootSequences(t *testing.T) {
+	for _, data := range [][]byte{
+		[]byte("- key: value\n"),
+		[]byte("---\n- key: value\n"),
+		[]byte("# a sequence follows\n- key: value\n"),
+	} {
+		if _, _, ok, err := yamlToJSONWithDuplicateDetection(data); err != nil || ok {
+			t.Fatalf("yamlToJSONWithDuplicateDetection(%q) returned err=%v ok=%t for a root sequence", data, err, ok)
+		}
+	}
+}
+
 func TestYAMLToJSONWithDuplicateDetectionFallsBackForComplexMapKeySyntax(t *testing.T) {
 	for _, data := range [][]byte{
 		[]byte("? [key]\n: value\n"),
