@@ -219,8 +219,9 @@ type ListItemIterator struct {
 }
 
 // NewListItemIterator returns a validated iterator over obj's Items field. It returns
-// true when obj's Items field is nil. Item representations that ExtractList captures
-// before returning are captured before this function returns as well.
+// true when obj's Items field is nil, in which case the returned iterator has length zero.
+// It preserves ExtractList's item representations: conversions that capture an item value do
+// so before this function returns, while pointer-based items retain their Items backing array.
 func NewListItemIterator(obj runtime.Object) (ListItemIterator, bool, error) {
 	extractor, itemsNil, err := newListItemExtractor(obj, false)
 	if err != nil || itemsNil {
@@ -238,10 +239,7 @@ func NewListItemIterator(obj runtime.Object) (ListItemIterator, bool, error) {
 	iterator := ListItemIterator{extractor: extractor}
 	iterator.items = make([]runtime.Object, extractor.items.Len())
 	for i := range iterator.items {
-		iterator.items[i], err = extractor.item(i)
-		if err != nil {
-			return ListItemIterator{}, false, err
-		}
+		iterator.items[i] = extractor.item(i)
 	}
 	return iterator, false, nil
 }
@@ -251,13 +249,16 @@ func (i ListItemIterator) Len() int {
 	if i.items != nil {
 		return len(i.items)
 	}
+	if !i.extractor.items.IsValid() {
+		return 0
+	}
 	return i.extractor.items.Len()
 }
 
-// Item returns the object at index.
-func (i ListItemIterator) Item(index int) (runtime.Object, error) {
+// Item returns the object at index. It panics if index is out of range.
+func (i ListItemIterator) Item(index int) runtime.Object {
 	if i.items != nil {
-		return i.items[index], nil
+		return i.items[index]
 	}
 	return i.extractor.item(index)
 }
@@ -273,10 +274,7 @@ func extractList(obj runtime.Object, allocNew bool) ([]runtime.Object, error) {
 	}
 	list := make([]runtime.Object, extractor.items.Len())
 	for i := range list {
-		list[i], err = extractor.item(i)
-		if err != nil {
-			return nil, err
-		}
+		list[i] = extractor.item(i)
 	}
 	return list, nil
 }
@@ -330,39 +328,31 @@ func (e listItemExtractor) validate() error {
 	return e.itemError(0, raw)
 }
 
-func (e listItemExtractor) item(i int) (runtime.Object, error) {
+func (e listItemExtractor) item(i int) runtime.Object {
 	raw := e.items.Index(i)
 	switch {
 	case e.isRawExtension:
 		item := raw.Interface().(runtime.RawExtension)
 		switch {
 		case item.Object != nil:
-			return item.Object, nil
+			return item.Object
 		case item.Raw != nil:
 			// TODO: Set ContentEncoding and ContentType correctly.
-			return &runtime.Unknown{Raw: item.Raw}, nil
+			return &runtime.Unknown{Raw: item.Raw}
 		default:
-			return nil, nil
+			return nil
 		}
 	case e.implementsObject:
-		return raw.Interface().(runtime.Object), nil
+		return raw.Interface().(runtime.Object)
 	case e.allocNew:
 		// shallow copy to avoid retaining a reference to the original list item
 		itemCopy := reflect.New(raw.Type())
 		// assign to itemCopy and type-assert
 		itemCopy.Elem().Set(raw)
 		// reflect.New will guarantee that itemCopy must be a pointer.
-		item, ok := itemCopy.Interface().(runtime.Object)
-		if !ok {
-			return nil, e.itemError(i, raw)
-		}
-		return item, nil
+		return itemCopy.Interface().(runtime.Object)
 	default:
-		item, found := raw.Addr().Interface().(runtime.Object)
-		if !found {
-			return nil, e.itemError(i, raw)
-		}
-		return item, nil
+		return raw.Addr().Interface().(runtime.Object)
 	}
 }
 

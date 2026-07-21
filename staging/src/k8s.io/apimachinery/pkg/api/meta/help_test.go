@@ -449,16 +449,19 @@ func testListItemIterator(t *testing.T) {
 			if itemsNil != tc.itemsNil {
 				t.Errorf("NewListItemIterator() itemsNil = %t, want %t", itemsNil, tc.itemsNil)
 			}
-			if tc.wantErr || itemsNil {
+			if tc.wantErr {
+				return
+			}
+			if itemsNil {
+				if got := iterator.Len(); got != 0 {
+					t.Errorf("Len() = %d, want 0", got)
+				}
 				return
 			}
 
 			got := make([]runtime.Object, iterator.Len())
 			for i := range got {
-				got[i], err = iterator.Item(i)
-				if err != nil {
-					t.Fatalf("Item(%d): %v", i, err)
-				}
+				got[i] = iterator.Item(i)
 			}
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("ListItemIterator = %#v, want %#v", got, tc.want)
@@ -487,10 +490,7 @@ func testListItemIterator(t *testing.T) {
 
 		got := make([]runtime.Object, iterator.Len())
 		for i := range got {
-			got[i], err = iterator.Item(i)
-			if err != nil {
-				t.Fatalf("Item(%d): %v", i, err)
-			}
+			got[i] = iterator.Item(i)
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("ListItemIterator after mutation = %#v, want ExtractList snapshot %#v", got, want)
@@ -514,13 +514,34 @@ func testListItemIterator(t *testing.T) {
 
 		got := make([]runtime.Object, iterator.Len())
 		for i := range got {
-			got[i], err = iterator.Item(i)
-			if err != nil {
-				t.Fatalf("Item(%d): %v", i, err)
-			}
+			got[i] = iterator.Item(i)
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("ListItemIterator after replacing Items = %#v, want ExtractList snapshot %#v", got, want)
+		}
+	})
+
+	t.Run("matches pointer receiver item mutation", func(t *testing.T) {
+		list := fakeSampleList(2)
+		want, err := ExtractList(list)
+		if err != nil {
+			t.Fatalf("ExtractList: %v", err)
+		}
+		iterator, itemsNil, err := NewListItemIterator(list)
+		if err != nil {
+			t.Fatalf("NewListItemIterator: %v", err)
+		}
+		if itemsNil {
+			t.Fatal("NewListItemIterator() itemsNil = true, want false")
+		}
+		list.Items[1].ObjectMeta.Name = "replacement"
+
+		got := make([]runtime.Object, iterator.Len())
+		for i := range got {
+			got[i] = iterator.Item(i)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("ListItemIterator after item mutation = %#v, want ExtractList result %#v", got, want)
 		}
 	})
 }

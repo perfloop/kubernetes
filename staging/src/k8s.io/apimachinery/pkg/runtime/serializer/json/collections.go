@@ -95,8 +95,6 @@ func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, meta.Li
 
 // streamEncoder encodes JSON values to w, reusing an internal buffer across
 // values to avoid the fresh output allocation json.Marshal makes per call.
-var itemSeparator = []byte(",")
-
 type streamEncoder struct {
 	w    io.Writer
 	buf  bytes.Buffer
@@ -150,16 +148,12 @@ func (e *streamEncoder) encodeListItems(items meta.ListItemIterator, itemsNil bo
 		return err
 	}
 	itemsLen := items.Len()
+	suffix := []byte(",")
 	for i := 0; i < itemsLen; i++ {
-		item, err := items.Item(i)
-		if err != nil {
-			return err
-		}
-		suffix := itemSeparator
 		if i == itemsLen-1 {
 			suffix = nil
 		}
-		if err := e.encodeValue(item, suffix); err != nil {
+		if err := e.encodeValue(items.Item(i), suffix); err != nil {
 			return err
 		}
 	}

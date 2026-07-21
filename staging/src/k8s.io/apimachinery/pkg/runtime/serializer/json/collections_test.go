@@ -27,10 +27,12 @@ import (
 
 	"sigs.k8s.io/randfill"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	testapigroupv1 "k8s.io/apimachinery/pkg/apis/testapigroup/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 func TestCollectionsEncoding(t *testing.T) {
@@ -41,6 +43,8 @@ func TestCollectionsEncoding(t *testing.T) {
 		testCollectionsEncoding(t, NewSerializerWithOptions(DefaultMetaFactory, nil, nil, SerializerOptions{StreamingCollectionsEncoding: true}), true)
 	})
 	t.Run("Streaming snapshots raw extension items before writing", testStreamingRawExtensionItemsSnapshot)
+	t.Run("Streaming snapshots value items before writing", testStreamingValueItemsSnapshot)
+	t.Run("Streaming matches pointer item mutation", testStreamingPointerItemsMutation)
 }
 
 func testStreamingRawExtensionItemsSnapshot(t *testing.T) {
@@ -70,6 +74,73 @@ func testStreamingRawExtensionItemsSnapshot(t *testing.T) {
 	}
 }
 
+func testStreamingValueItemsSnapshot(t *testing.T) {
+	first := snapshotValueObject{TypeMeta: metav1.TypeMeta{Kind: "Value", APIVersion: "testapigroup.k8s.io/v1"}, Name: "first"}
+	second := snapshotValueObject{TypeMeta: metav1.TypeMeta{Kind: "Value", APIVersion: "testapigroup.k8s.io/v1"}, Name: "second"}
+	replacement := snapshotValueObject{TypeMeta: metav1.TypeMeta{Kind: "Value", APIVersion: "testapigroup.k8s.io/v1"}, Name: "replacement"}
+	list := &snapshotValueList{
+		TypeMeta: metav1.TypeMeta{Kind: "List", APIVersion: "testapigroup.k8s.io/v1"},
+		Items:    []snapshotValueObject{first, second},
+	}
+
+	normal := NewSerializerWithOptions(DefaultMetaFactory, nil, nil, SerializerOptions{})
+	var expected bytes.Buffer
+	if err := normal.Encode(list, &expected); err != nil {
+		t.Fatalf("normal encoder: %v", err)
+	}
+
+	streaming := NewSerializerWithOptions(DefaultMetaFactory, nil, nil, SerializerOptions{StreamingCollectionsEncoding: true})
+	actual := &mutatingBuffer{mutate: func() {
+		list.Items[1] = replacement
+	}}
+	if err := streaming.Encode(list, actual); err != nil {
+		t.Fatalf("streaming encoder: %v", err)
+	}
+	if !bytes.Equal(actual.Bytes(), expected.Bytes()) {
+		t.Errorf("streaming output = %q, want %q", actual.String(), expected.String())
+	}
+}
+
+func testStreamingPointerItemsMutation(t *testing.T) {
+	list := &testapigroupv1.CarpList{
+		TypeMeta: metav1.TypeMeta{Kind: "CarpList", APIVersion: "testapigroup.k8s.io/v1"},
+		Items: []testapigroupv1.Carp{
+			{ObjectMeta: metav1.ObjectMeta{Name: "first"}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "second"}},
+		},
+	}
+	legacyItems, err := meta.ExtractList(list)
+	if err != nil {
+		t.Fatalf("ExtractList: %v", err)
+	}
+	list.Items[1].ObjectMeta.Name = "replacement"
+	legacyObject, err := meta.Accessor(legacyItems[1])
+	if err != nil {
+		t.Fatalf("legacy item accessor: %v", err)
+	}
+	if got := legacyObject.GetName(); got != "replacement" {
+		t.Fatalf("ExtractList item after mutation = %q, want replacement", got)
+	}
+
+	normal := NewSerializerWithOptions(DefaultMetaFactory, nil, nil, SerializerOptions{})
+	var expected bytes.Buffer
+	if err := normal.Encode(list, &expected); err != nil {
+		t.Fatalf("normal encoder: %v", err)
+	}
+	list.Items[1].ObjectMeta.Name = "second"
+
+	streaming := NewSerializerWithOptions(DefaultMetaFactory, nil, nil, SerializerOptions{StreamingCollectionsEncoding: true})
+	actual := &mutatingBuffer{mutate: func() {
+		list.Items[1].ObjectMeta.Name = "replacement"
+	}}
+	if err := streaming.Encode(list, actual); err != nil {
+		t.Fatalf("streaming encoder: %v", err)
+	}
+	if !bytes.Equal(actual.Bytes(), expected.Bytes()) {
+		t.Errorf("streaming output = %q, want %q", actual.String(), expected.String())
+	}
+}
+
 type snapshotRawExtensionList struct {
 	metav1.TypeMeta `json:""`
 	metav1.ListMeta `json:"metadata,omitempty"`
@@ -77,6 +148,26 @@ type snapshotRawExtensionList struct {
 }
 
 func (*snapshotRawExtensionList) DeepCopyObject() runtime.Object { return nil }
+
+type snapshotValueList struct {
+	metav1.TypeMeta `json:""`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []snapshotValueObject `json:"items"`
+}
+
+func (*snapshotValueList) DeepCopyObject() runtime.Object { return nil }
+
+type snapshotValueObject struct {
+	metav1.TypeMeta `json:""`
+	Name            string `json:"name"`
+}
+
+func (o snapshotValueObject) GetObjectKind() schema.ObjectKind {
+	typeMeta := o.TypeMeta
+	return &typeMeta
+}
+
+func (snapshotValueObject) DeepCopyObject() runtime.Object { return nil }
 
 type mutatingBuffer struct {
 	bytes.Buffer
