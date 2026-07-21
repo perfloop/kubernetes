@@ -396,7 +396,141 @@ func TestExtractList(t *testing.T) {
 			})
 		})
 	}
+	t.Run("ListItemIterator", testListItemIterator)
 }
+
+func testListItemIterator(t *testing.T) {
+	rawObject := &Foo{ObjectMeta: metav1.ObjectMeta{Name: "object"}}
+	raw := []byte(`{"metadata":{"name":"raw"}}`)
+	tests := []struct {
+		name     string
+		list     runtime.Object
+		itemsNil bool
+		want     []runtime.Object
+		wantErr  bool
+	}{
+		{
+			name:     "nil items",
+			list:     &SampleList{},
+			itemsNil: true,
+		},
+		{
+			name:     "empty items",
+			list:     &SampleList{Items: []Sample{}},
+			itemsNil: false,
+			want:     []runtime.Object{},
+		},
+		{
+			name: "raw extensions",
+			list: &RawExtensionList{Items: []runtime.RawExtension{
+				{Object: rawObject},
+				{Raw: raw},
+				{},
+			}},
+			want: []runtime.Object{
+				rawObject,
+				&runtime.Unknown{Raw: raw},
+				nil,
+			},
+		},
+		{
+			name:    "invalid items",
+			list:    &invalidList{Items: []string{"not a runtime object"}},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			iterator, itemsNil, err := NewListItemIterator(tc.list)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("NewListItemIterator() error = %v, want error = %t", err, tc.wantErr)
+			}
+			if itemsNil != tc.itemsNil {
+				t.Errorf("NewListItemIterator() itemsNil = %t, want %t", itemsNil, tc.itemsNil)
+			}
+			if tc.wantErr || itemsNil {
+				return
+			}
+
+			got := make([]runtime.Object, iterator.Len())
+			for i := range got {
+				got[i], err = iterator.Item(i)
+				if err != nil {
+					t.Fatalf("Item(%d): %v", i, err)
+				}
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("ListItemIterator = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("snapshots raw extension items", func(t *testing.T) {
+		first := &Foo{ObjectMeta: metav1.ObjectMeta{Name: "first"}}
+		second := &Foo{ObjectMeta: metav1.ObjectMeta{Name: "second"}}
+		replacement := &Foo{ObjectMeta: metav1.ObjectMeta{Name: "replacement"}}
+		list := &RawExtensionList{Items: []runtime.RawExtension{{Object: first}, {Object: second}}}
+
+		want, err := ExtractList(list)
+		if err != nil {
+			t.Fatalf("ExtractList: %v", err)
+		}
+		iterator, itemsNil, err := NewListItemIterator(list)
+		if err != nil {
+			t.Fatalf("NewListItemIterator: %v", err)
+		}
+		if itemsNil {
+			t.Fatal("NewListItemIterator() itemsNil = true, want false")
+		}
+		list.Items[1].Object = replacement
+
+		got := make([]runtime.Object, iterator.Len())
+		for i := range got {
+			got[i], err = iterator.Item(i)
+			if err != nil {
+				t.Fatalf("Item(%d): %v", i, err)
+			}
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("ListItemIterator after mutation = %#v, want ExtractList snapshot %#v", got, want)
+		}
+	})
+
+	t.Run("retains pointer receiver backing array", func(t *testing.T) {
+		list := fakeSampleList(2)
+		want, err := ExtractList(list)
+		if err != nil {
+			t.Fatalf("ExtractList: %v", err)
+		}
+		iterator, itemsNil, err := NewListItemIterator(list)
+		if err != nil {
+			t.Fatalf("NewListItemIterator: %v", err)
+		}
+		if itemsNil {
+			t.Fatal("NewListItemIterator() itemsNil = true, want false")
+		}
+		list.Items = []Sample{{ObjectMeta: metav1.ObjectMeta{Name: "replacement"}}}
+
+		got := make([]runtime.Object, iterator.Len())
+		for i := range got {
+			got[i], err = iterator.Item(i)
+			if err != nil {
+				t.Fatalf("Item(%d): %v", i, err)
+			}
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("ListItemIterator after replacing Items = %#v, want ExtractList snapshot %#v", got, want)
+		}
+	})
+}
+
+type invalidList struct {
+	Items []string
+}
+
+func (*invalidList) GetObjectKind() schema.ObjectKind { return schema.EmptyObjectKind }
+func (*invalidList) DeepCopyObject() runtime.Object   { return nil }
 
 func TestLenList(t *testing.T) {
 	tests := []struct {

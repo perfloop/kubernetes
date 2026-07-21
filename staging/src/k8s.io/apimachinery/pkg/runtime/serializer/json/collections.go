@@ -39,9 +39,9 @@ func streamEncodeCollections(obj runtime.Object, w io.Writer) (bool, error) {
 	if _, ok := obj.(json.Marshaler); ok {
 		return false, nil
 	}
-	typeMeta, listMeta, items, err := getListMeta(obj)
+	typeMeta, listMeta, items, itemsNil, err := getListMeta(obj)
 	if err == nil {
-		return true, newStreamEncoder(w).encodeList(typeMeta, listMeta, items)
+		return true, newStreamEncoder(w).encodeList(typeMeta, listMeta, items, itemsNil)
 	}
 	return false, nil
 }
@@ -52,49 +52,51 @@ func streamEncodeCollections(obj runtime.Object, w io.Writer) (bool, error) {
 // * Validate json tags to prevent incompatibility with json standard package.
 // * ListMetaAccessor doesn't distinguish empty from nil value.
 // * TypeAccessort reparsing "apiVersion" and serializing it with "{group}/{version}"
-func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, []runtime.Object, error) {
+func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, meta.ListItemIterator, bool, error) {
 	listValue, err := conversion.EnforcePtr(list)
 	if err != nil {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, nil, err
+		return metav1.TypeMeta{}, metav1.ListMeta{}, meta.ListItemIterator{}, false, err
 	}
 	listType := listValue.Type()
 	if listType.NumField() != 3 {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, nil, fmt.Errorf("expected ListType to have 3 fields")
+		return metav1.TypeMeta{}, metav1.ListMeta{}, meta.ListItemIterator{}, false, fmt.Errorf("expected ListType to have 3 fields")
 	}
 	// TypeMeta
 	typeMeta, ok := listValue.Field(0).Interface().(metav1.TypeMeta)
 	if !ok {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, nil, fmt.Errorf("expected TypeMeta field to have TypeMeta type")
+		return metav1.TypeMeta{}, metav1.ListMeta{}, meta.ListItemIterator{}, false, fmt.Errorf("expected TypeMeta field to have TypeMeta type")
 	}
 	if !listType.Field(0).Anonymous {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, nil, fmt.Errorf(`expected TypeMeta json field tag to be embedded`)
+		return metav1.TypeMeta{}, metav1.ListMeta{}, meta.ListItemIterator{}, false, fmt.Errorf(`expected TypeMeta json field tag to be embedded`)
 	}
 	if jsonTag, jsonTagExists := listType.Field(0).Tag.Lookup("json"); !jsonTagExists {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, nil, fmt.Errorf(`expected TypeMeta json field tag`)
+		return metav1.TypeMeta{}, metav1.ListMeta{}, meta.ListItemIterator{}, false, fmt.Errorf(`expected TypeMeta json field tag`)
 	} else if jsonTag != "" && jsonTag != ",inline" {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, nil, fmt.Errorf(`expected TypeMeta json field tag to be "" or ",inline"`)
+		return metav1.TypeMeta{}, metav1.ListMeta{}, meta.ListItemIterator{}, false, fmt.Errorf(`expected TypeMeta json field tag to be "" or ",inline"`)
 	}
 	// ListMeta
 	listMeta, ok := listValue.Field(1).Interface().(metav1.ListMeta)
 	if !ok {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, nil, fmt.Errorf("expected ListMeta field to have ListMeta type")
+		return metav1.TypeMeta{}, metav1.ListMeta{}, meta.ListItemIterator{}, false, fmt.Errorf("expected ListMeta field to have ListMeta type")
 	}
 	if listType.Field(1).Tag.Get("json") != "metadata,omitempty" {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, nil, fmt.Errorf(`expected ListMeta json field tag to be "metadata,omitempty"`)
+		return metav1.TypeMeta{}, metav1.ListMeta{}, meta.ListItemIterator{}, false, fmt.Errorf(`expected ListMeta json field tag to be "metadata,omitempty"`)
 	}
 	// Items
-	items, err := meta.ExtractList(list)
+	items, itemsNil, err := meta.NewListItemIterator(list)
 	if err != nil {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, nil, err
+		return metav1.TypeMeta{}, metav1.ListMeta{}, meta.ListItemIterator{}, false, err
 	}
 	if listType.Field(2).Tag.Get("json") != "items" {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, nil, fmt.Errorf(`expected Items json field tag to be "items"`)
+		return metav1.TypeMeta{}, metav1.ListMeta{}, meta.ListItemIterator{}, false, fmt.Errorf(`expected Items json field tag to be "items"`)
 	}
-	return typeMeta, listMeta, items, nil
+	return typeMeta, listMeta, items, itemsNil, nil
 }
 
 // streamEncoder encodes JSON values to w, reusing an internal buffer across
 // values to avoid the fresh output allocation json.Marshal makes per call.
+var itemSeparator = []byte(",")
+
 type streamEncoder struct {
 	w    io.Writer
 	buf  bytes.Buffer
@@ -107,7 +109,7 @@ func newStreamEncoder(w io.Writer) *streamEncoder {
 	return e
 }
 
-func (e *streamEncoder) encodeList(typeMeta metav1.TypeMeta, listMeta metav1.ListMeta, items []runtime.Object) error {
+func (e *streamEncoder) encodeList(typeMeta metav1.TypeMeta, listMeta metav1.ListMeta, items meta.ListItemIterator, itemsNil bool) error {
 	// Start
 	if _, err := e.w.Write([]byte(`{`)); err != nil {
 		return err
@@ -131,7 +133,7 @@ func (e *streamEncoder) encodeList(typeMeta metav1.TypeMeta, listMeta metav1.Lis
 	}
 
 	// Items
-	if err := e.encodeItemsObjectSlice(items); err != nil {
+	if err := e.encodeListItems(items, itemsNil); err != nil {
 		return err
 	}
 
@@ -140,29 +142,28 @@ func (e *streamEncoder) encodeList(typeMeta metav1.TypeMeta, listMeta metav1.Lis
 	return err
 }
 
-func (e *streamEncoder) encodeItemsObjectSlice(items []runtime.Object) (err error) {
-	if items == nil {
-		err := e.encodeKeyValuePair("items", nil, nil)
+func (e *streamEncoder) encodeListItems(items meta.ListItemIterator, itemsNil bool) (err error) {
+	if itemsNil {
+		return e.encodeKeyValuePair("items", nil, nil)
+	}
+	if _, err := e.w.Write([]byte(`"items":[`)); err != nil {
 		return err
 	}
-	_, err = e.w.Write([]byte(`"items":[`))
-	if err != nil {
-		return err
-	}
-	suffix := []byte(",")
-	for i, item := range items {
-		if i == len(items)-1 {
+	itemsLen := items.Len()
+	for i := 0; i < itemsLen; i++ {
+		item, err := items.Item(i)
+		if err != nil {
+			return err
+		}
+		suffix := itemSeparator
+		if i == itemsLen-1 {
 			suffix = nil
 		}
-		err := e.encodeValue(item, suffix)
-		if err != nil {
+		if err := e.encodeValue(item, suffix); err != nil {
 			return err
 		}
 	}
 	_, err = e.w.Write([]byte("]"))
-	if err != nil {
-		return err
-	}
 	return err
 }
 

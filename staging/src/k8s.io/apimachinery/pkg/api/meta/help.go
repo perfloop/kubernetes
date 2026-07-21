@@ -211,60 +211,163 @@ func ExtractListWithAlloc(obj runtime.Object) ([]runtime.Object, error) {
 	return extractList(obj, true)
 }
 
+// ListItemIterator provides access to the objects ExtractList would return
+// without always materializing a []runtime.Object result.
+type ListItemIterator struct {
+	extractor listItemExtractor
+	items     []runtime.Object
+}
+
+// NewListItemIterator returns a validated iterator over obj's Items field. It returns
+// true when obj's Items field is nil. Item representations that ExtractList captures
+// before returning are captured before this function returns as well.
+func NewListItemIterator(obj runtime.Object) (ListItemIterator, bool, error) {
+	extractor, itemsNil, err := newListItemExtractor(obj, false)
+	if err != nil || itemsNil {
+		return ListItemIterator{}, itemsNil, err
+	}
+	if err := extractor.validate(); err != nil {
+		return ListItemIterator{}, false, err
+	}
+	if !extractor.requiresSnapshot() {
+		// Keep the Items slice header stable just as ExtractList's pointers retain
+		// the backing array that was present when extraction began.
+		extractor.items = reflect.ValueOf(extractor.items.Interface())
+		return ListItemIterator{extractor: extractor}, false, nil
+	}
+	iterator := ListItemIterator{extractor: extractor}
+	iterator.items = make([]runtime.Object, extractor.items.Len())
+	for i := range iterator.items {
+		iterator.items[i], err = extractor.item(i)
+		if err != nil {
+			return ListItemIterator{}, false, err
+		}
+	}
+	return iterator, false, nil
+}
+
+// Len returns the number of objects in the iterator.
+func (i ListItemIterator) Len() int {
+	if i.items != nil {
+		return len(i.items)
+	}
+	return i.extractor.items.Len()
+}
+
+// Item returns the object at index.
+func (i ListItemIterator) Item(index int) (runtime.Object, error) {
+	if i.items != nil {
+		return i.items[index], nil
+	}
+	return i.extractor.item(index)
+}
+
 // allocNew: Whether shallow copy is required when the elements in Object.Items are struct
 func extractList(obj runtime.Object, allocNew bool) ([]runtime.Object, error) {
-	itemsPtr, err := GetItemsPtr(obj)
-	if err != nil {
+	extractor, itemsNil, err := newListItemExtractor(obj, allocNew)
+	if err != nil || itemsNil {
 		return nil, err
 	}
-	items, err := conversion.EnforcePtr(itemsPtr)
-	if err != nil {
+	if err := extractor.validate(); err != nil {
 		return nil, err
 	}
-	if items.IsNil() {
-		return nil, nil
-	}
-	list := make([]runtime.Object, items.Len())
-	if len(list) == 0 {
-		return list, nil
-	}
-	elemType := items.Type().Elem()
-	isRawExtension := elemType == rawExtensionObjectType
-	implementsObject := elemType.Implements(objectType)
+	list := make([]runtime.Object, extractor.items.Len())
 	for i := range list {
-		raw := items.Index(i)
-		switch {
-		case isRawExtension:
-			item := raw.Interface().(runtime.RawExtension)
-			switch {
-			case item.Object != nil:
-				list[i] = item.Object
-			case item.Raw != nil:
-				// TODO: Set ContentEncoding and ContentType correctly.
-				list[i] = &runtime.Unknown{Raw: item.Raw}
-			default:
-				list[i] = nil
-			}
-		case implementsObject:
-			list[i] = raw.Interface().(runtime.Object)
-		case allocNew:
-			// shallow copy to avoid retaining a reference to the original list item
-			itemCopy := reflect.New(raw.Type())
-			// assign to itemCopy and type-assert
-			itemCopy.Elem().Set(raw)
-			var ok bool
-			// reflect.New will guarantee that itemCopy must be a pointer.
-			if list[i], ok = itemCopy.Interface().(runtime.Object); !ok {
-				return nil, fmt.Errorf("%v: item[%v]: Expected object, got %#v(%s)", obj, i, raw.Interface(), raw.Kind())
-			}
-		default:
-			var found bool
-			if list[i], found = raw.Addr().Interface().(runtime.Object); !found {
-				return nil, fmt.Errorf("%v: item[%v]: Expected object, got %#v(%s)", obj, i, raw.Interface(), raw.Kind())
-			}
+		list[i], err = extractor.item(i)
+		if err != nil {
+			return nil, err
 		}
 	}
 	return list, nil
+}
+
+type listItemExtractor struct {
+	obj              runtime.Object
+	items            reflect.Value
+	isRawExtension   bool
+	implementsObject bool
+	allocNew         bool
+}
+
+func newListItemExtractor(obj runtime.Object, allocNew bool) (listItemExtractor, bool, error) {
+	itemsPtr, err := GetItemsPtr(obj)
+	if err != nil {
+		return listItemExtractor{}, false, err
+	}
+	items, err := conversion.EnforcePtr(itemsPtr)
+	if err != nil {
+		return listItemExtractor{}, false, err
+	}
+	if items.IsNil() {
+		return listItemExtractor{}, true, nil
+	}
+	elemType := items.Type().Elem()
+	return listItemExtractor{
+		obj:              obj,
+		items:            items,
+		isRawExtension:   elemType == rawExtensionObjectType,
+		implementsObject: elemType.Implements(objectType),
+		allocNew:         allocNew,
+	}, false, nil
+}
+
+func (e listItemExtractor) requiresSnapshot() bool {
+	return e.isRawExtension || e.implementsObject
+}
+
+func (e listItemExtractor) validate() error {
+	if e.items.Len() == 0 || e.requiresSnapshot() {
+		return nil
+	}
+	raw := e.items.Index(0)
+	if e.allocNew {
+		if reflect.PointerTo(raw.Type()).Implements(objectType) {
+			return nil
+		}
+	} else if raw.Addr().Type().Implements(objectType) {
+		return nil
+	}
+	return e.itemError(0, raw)
+}
+
+func (e listItemExtractor) item(i int) (runtime.Object, error) {
+	raw := e.items.Index(i)
+	switch {
+	case e.isRawExtension:
+		item := raw.Interface().(runtime.RawExtension)
+		switch {
+		case item.Object != nil:
+			return item.Object, nil
+		case item.Raw != nil:
+			// TODO: Set ContentEncoding and ContentType correctly.
+			return &runtime.Unknown{Raw: item.Raw}, nil
+		default:
+			return nil, nil
+		}
+	case e.implementsObject:
+		return raw.Interface().(runtime.Object), nil
+	case e.allocNew:
+		// shallow copy to avoid retaining a reference to the original list item
+		itemCopy := reflect.New(raw.Type())
+		// assign to itemCopy and type-assert
+		itemCopy.Elem().Set(raw)
+		// reflect.New will guarantee that itemCopy must be a pointer.
+		item, ok := itemCopy.Interface().(runtime.Object)
+		if !ok {
+			return nil, e.itemError(i, raw)
+		}
+		return item, nil
+	default:
+		item, found := raw.Addr().Interface().(runtime.Object)
+		if !found {
+			return nil, e.itemError(i, raw)
+		}
+		return item, nil
+	}
+}
+
+func (e listItemExtractor) itemError(i int, raw reflect.Value) error {
+	return fmt.Errorf("%v: item[%v]: Expected object, got %#v(%s)", e.obj, i, raw.Interface(), raw.Kind())
 }
 
 var (

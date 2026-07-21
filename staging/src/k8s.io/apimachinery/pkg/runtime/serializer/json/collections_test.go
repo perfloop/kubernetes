@@ -40,6 +40,55 @@ func TestCollectionsEncoding(t *testing.T) {
 	t.Run("Streaming", func(t *testing.T) {
 		testCollectionsEncoding(t, NewSerializerWithOptions(DefaultMetaFactory, nil, nil, SerializerOptions{StreamingCollectionsEncoding: true}), true)
 	})
+	t.Run("Streaming snapshots raw extension items before writing", testStreamingRawExtensionItemsSnapshot)
+}
+
+func testStreamingRawExtensionItemsSnapshot(t *testing.T) {
+	first := &testapigroupv1.Carp{ObjectMeta: metav1.ObjectMeta{Name: "first"}}
+	second := &testapigroupv1.Carp{ObjectMeta: metav1.ObjectMeta{Name: "second"}}
+	replacement := &testapigroupv1.Carp{ObjectMeta: metav1.ObjectMeta{Name: "replacement"}}
+	list := &snapshotRawExtensionList{
+		TypeMeta: metav1.TypeMeta{Kind: "List", APIVersion: "testapigroup.k8s.io/v1"},
+		Items:    []runtime.RawExtension{{Object: first}, {Object: second}},
+	}
+
+	normal := NewSerializerWithOptions(DefaultMetaFactory, nil, nil, SerializerOptions{})
+	var expected bytes.Buffer
+	if err := normal.Encode(list, &expected); err != nil {
+		t.Fatalf("normal encoder: %v", err)
+	}
+
+	streaming := NewSerializerWithOptions(DefaultMetaFactory, nil, nil, SerializerOptions{StreamingCollectionsEncoding: true})
+	actual := &mutatingBuffer{mutate: func() {
+		list.Items[1].Object = replacement
+	}}
+	if err := streaming.Encode(list, actual); err != nil {
+		t.Fatalf("streaming encoder: %v", err)
+	}
+	if !bytes.Equal(actual.Bytes(), expected.Bytes()) {
+		t.Errorf("streaming output = %q, want %q", actual.String(), expected.String())
+	}
+}
+
+type snapshotRawExtensionList struct {
+	metav1.TypeMeta `json:""`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []runtime.RawExtension `json:"items"`
+}
+
+func (*snapshotRawExtensionList) DeepCopyObject() runtime.Object { return nil }
+
+type mutatingBuffer struct {
+	bytes.Buffer
+	mutate func()
+}
+
+func (b *mutatingBuffer) Write(data []byte) (int, error) {
+	if b.mutate != nil {
+		b.mutate()
+		b.mutate = nil
+	}
+	return b.Buffer.Write(data)
 }
 
 // testCollectionsEncoding should provide comprehensive tests to validate streaming implementation of encoder.
