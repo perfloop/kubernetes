@@ -73,8 +73,8 @@ func yamlToJSONWithDuplicateDetection(data []byte) ([]byte, bool, bool, error) {
 // key has scalar value "<<" (requiring '<' or an escape), or an explicit merge
 // tag (requiring '!' or a tag directive '%'). Complex map keys require an
 // explicit-key, flow-collection, or alias indicator. A leading '-' may be a
-// root sequence or document marker; a comment preamble can hide either root
-// shape, so both use the regular converter without scanning the full input.
+// root sequence or document marker, so it uses the regular converter without
+// scanning the full input.
 func mayRequireRegularYAMLConversion(data []byte) bool {
 	if mayStartWithYAMLSequenceOrDocument(data) {
 		return true
@@ -84,8 +84,23 @@ func mayRequireRegularYAMLConversion(data []byte) bool {
 
 func mayStartWithYAMLSequenceOrDocument(data []byte) bool {
 	data = bytes.TrimLeft(data, " \t\r\n")
-	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
-	return len(data) > 0 && (data[0] == '-' || data[0] == '#')
+	if len(data) >= 3 && data[0] == 0xef && data[1] == 0xbb && data[2] == 0xbf {
+		data = data[3:]
+	}
+	for {
+		data = bytes.TrimLeft(data, " \t\r\n")
+		if len(data) == 0 {
+			return false
+		}
+		if data[0] != '#' {
+			return data[0] == '-'
+		}
+		lineEnd := bytes.IndexByte(data, '\n')
+		if lineEnd == -1 {
+			return false
+		}
+		data = data[lineEnd+1:]
+	}
 }
 
 var errYAMLConversionFallback = errors.New("YAML conversion requires the regular converter")

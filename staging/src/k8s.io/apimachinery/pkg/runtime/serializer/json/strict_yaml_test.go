@@ -105,10 +105,27 @@ func TestYAMLToJSONWithDuplicateDetectionFallsBackForRootSequences(t *testing.T)
 		[]byte("- key: value\n"),
 		[]byte("---\n- key: value\n"),
 		[]byte("# a sequence follows\n- key: value\n"),
+		[]byte("\xef\xbb\xbf\n- key: value\n"),
+		[]byte("\xef\xbb\xbf\n# a sequence follows\n---\n- key: value\n"),
 	} {
 		if _, _, ok, err := yamlToJSONWithDuplicateDetection(data); err != nil || ok {
 			t.Fatalf("yamlToJSONWithDuplicateDetection(%q) returned err=%v ok=%t for a root sequence", data, err, ok)
 		}
+	}
+}
+
+func TestYAMLToJSONWithDuplicateDetectionConvertsCommentPrefixedMapping(t *testing.T) {
+	data := []byte("# a mapping follows\napiVersion: v1\nkind: ConfigMap\n")
+	expected, err := yaml.YAMLToJSONStrict(data)
+	if err != nil {
+		t.Fatalf("YAMLToJSONStrict: %v", err)
+	}
+	actual, hasDuplicate, ok, err := yamlToJSONWithDuplicateDetection(data)
+	if err != nil || !ok || hasDuplicate {
+		t.Fatalf("yamlToJSONWithDuplicateDetection returned err=%v ok=%t duplicate=%t", err, ok, hasDuplicate)
+	}
+	if !bytes.Equal(actual, expected) {
+		t.Fatalf("yamlToJSONWithDuplicateDetection = %s, want %s", actual, expected)
 	}
 }
 
