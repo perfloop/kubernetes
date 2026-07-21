@@ -167,10 +167,6 @@ func yamlMapKeyToString(key, value interface{}) (string, error) {
 		return strconv.Itoa(typedKey), nil
 	case int64:
 		return strconv.FormatInt(typedKey, 10), nil
-	case uint64:
-		// Delegate this uncommon key type to the authoritative converter rather
-		// than duplicating its version-specific conversion behavior.
-		return "", errYAMLConversionFallback
 	case float64:
 		keyString := strconv.FormatFloat(typedKey, 'g', -1, 32)
 		switch keyString {

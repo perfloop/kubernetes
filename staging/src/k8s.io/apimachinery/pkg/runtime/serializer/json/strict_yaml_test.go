@@ -161,10 +161,12 @@ func TestYAMLToJSONWithDuplicateDetectionReturnsUnsupportedScalarMapKeyError(t *
 	}
 }
 
-func TestYAMLToJSONWithDuplicateDetectionFallsBackForUint64MapKey(t *testing.T) {
+func TestYAMLToJSONWithDuplicateDetectionReturnsUint64MapKeyError(t *testing.T) {
 	data := []byte("18446744073709551615: retained\n")
-	if _, _, ok, err := yamlToJSONWithDuplicateDetection(data); err != nil || ok {
-		t.Fatalf("yamlToJSONWithDuplicateDetection returned err=%v ok=%t for a uint64 map key", err, ok)
+	_, expectedErr := yaml.YAMLToJSON(data)
+	_, _, ok, actualErr := yamlToJSONWithDuplicateDetection(data)
+	if ok || expectedErr == nil || actualErr == nil || actualErr.Error() != expectedErr.Error() {
+		t.Fatalf("yamlToJSONWithDuplicateDetection returned ok=%t err=%v, want %v", ok, actualErr, expectedErr)
 	}
 }
 
