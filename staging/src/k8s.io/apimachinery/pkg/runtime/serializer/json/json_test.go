@@ -640,6 +640,21 @@ func TestDecode(t *testing.T) {
 			yaml:   true,
 			strict: true,
 		},
+		// Duplicate fields should return an error when Decode creates the target.
+		{
+			data: []byte("kind: Test\n" +
+				"apiVersion: other/blah\n" +
+				"value: 1\n" +
+				"value: 1\n"),
+			typer:       &mockTyper{gvk: &schema.GroupVersionKind{Kind: "Test", Group: "other", Version: "blah"}},
+			creater:     &mockCreater{obj: &testDecodable{}},
+			expectedGVK: &schema.GroupVersionKind{Kind: "Test", Group: "other", Version: "blah"},
+			errFn: func(err error) bool {
+				return strings.Contains(err.Error(), `"value" already set in map`)
+			},
+			yaml:   true,
+			strict: true,
+		},
 		// Duplicate fields should return an error from the strict JSON deserializer for unstructured.
 		{
 			data:        []byte(`{"kind":"Custom","value":1,"value":1}`),

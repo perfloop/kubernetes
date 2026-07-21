@@ -136,11 +136,21 @@ func gvkWithDefaults(actual, defaultGVK schema.GroupVersionKind) schema.GroupVer
 // On success or most errors, the method will return the calculated schema kind.
 // The gvk calculate priority will be originalData > default gvk > into
 func (s *Serializer) Decode(originalData []byte, gvk *schema.GroupVersionKind, into runtime.Object) (runtime.Object, *schema.GroupVersionKind, error) {
+	_, isUnstructured := into.(runtime.Unstructured)
+
 	data := originalData
 	var strictErr error
+	strictYAMLConverted := false
 	if s.options.Yaml {
+		// Direct unstructured decoding reaches unmarshal after metadata
+		// interpretation, so its strict conversion can be reused there. Other
+		// targets can return after metadata or destination resolution, so retain
+		// their regular conversion.
+		strictYAMLConversion := s.options.Strict && isUnstructured
+
 		var err error
-		if s.options.Strict {
+		if strictYAMLConversion {
+			strictYAMLConverted = true
 			data, strictErr = yaml.YAMLToJSONStrict(originalData)
 			if strictErr != nil {
 				data, err = yaml.YAMLToJSON(originalData)
@@ -170,11 +180,10 @@ func (s *Serializer) Decode(originalData []byte, gvk *schema.GroupVersionKind, i
 	}
 
 	if into != nil {
-		_, isUnstructured := into.(runtime.Unstructured)
 		types, _, err := s.typer.ObjectKinds(into)
 		switch {
 		case runtime.IsNotRegisteredError(err), isUnstructured:
-			strictErrs, err := s.unmarshal(into, data, strictErr)
+			strictErrs, err := s.unmarshal(into, data, originalData, strictYAMLConverted, strictErr)
 			if err != nil {
 				return nil, actual, err
 			}
@@ -214,7 +223,7 @@ func (s *Serializer) Decode(originalData []byte, gvk *schema.GroupVersionKind, i
 		return nil, actual, err
 	}
 
-	strictErrs, err := s.unmarshal(obj, data, strictErr)
+	strictErrs, err := s.unmarshal(obj, data, originalData, strictYAMLConverted, strictErr)
 	if err != nil {
 		return nil, actual, err
 	} else if len(strictErrs) > 0 {
@@ -272,7 +281,7 @@ func (s *Serializer) IsStrict() bool {
 	return s.options.Strict
 }
 
-func (s *Serializer) unmarshal(into runtime.Object, data []byte, yamlStrictErr error) (strictErrs []error, err error) {
+func (s *Serializer) unmarshal(into runtime.Object, data, originalData []byte, strictYAMLConverted bool, yamlStrictErr error) (strictErrs []error, err error) {
 	// If the deserializer is non-strict, return here.
 	if !s.options.Strict {
 		if err := kjson.UnmarshalCaseSensitivePreserveInts(data, into); err != nil {
@@ -281,10 +290,15 @@ func (s *Serializer) unmarshal(into runtime.Object, data []byte, yamlStrictErr e
 		return nil, nil
 	}
 
+	if s.options.Yaml && !strictYAMLConverted {
+		// Decode retained the regular conversion for a path that can return early.
+		// If this path reaches unmarshal after all, collect its strict YAML diagnostic
+		// just as Decode did before reusing strict conversion for materialization.
+		_, yamlStrictErr = yaml.YAMLToJSONStrict(originalData)
+	}
 	if yamlStrictErr != nil {
-		// Decode already converted the YAML with YAMLToJSONStrict. A duplicate-field
-		// error requires decoding the regular YAML result, then returning the saved
-		// strict diagnostic to preserve the existing Decode behavior.
+		// A duplicate-field error requires decoding the regular YAML result, then
+		// returning the strict diagnostic to preserve the existing Decode behavior.
 		strictErrs = append(strictErrs, yamlStrictErr)
 	}
 
