@@ -223,7 +223,7 @@ type ListItemIterator struct {
 // It preserves ExtractList's item representations: conversions that capture an item value do
 // so before this function returns, while pointer-based items retain their Items backing array.
 func NewListItemIterator(obj runtime.Object) (ListItemIterator, bool, error) {
-	extractor, itemsNil, err := newListItemExtractor(obj, false)
+	extractor, itemsNil, err := newListItemExtractor(obj)
 	if err != nil || itemsNil {
 		return ListItemIterator{}, itemsNil, err
 	}
@@ -236,8 +236,7 @@ func NewListItemIterator(obj runtime.Object) (ListItemIterator, bool, error) {
 		extractor.items = reflect.ValueOf(extractor.items.Interface())
 		return ListItemIterator{extractor: extractor}, false, nil
 	}
-	iterator := ListItemIterator{extractor: extractor}
-	iterator.items = make([]runtime.Object, extractor.items.Len())
+	iterator := ListItemIterator{items: make([]runtime.Object, extractor.items.Len())}
 	for i := range iterator.items {
 		iterator.items[i] = extractor.item(i)
 	}
@@ -265,16 +264,56 @@ func (i ListItemIterator) Item(index int) runtime.Object {
 
 // allocNew: Whether shallow copy is required when the elements in Object.Items are struct
 func extractList(obj runtime.Object, allocNew bool) ([]runtime.Object, error) {
-	extractor, itemsNil, err := newListItemExtractor(obj, allocNew)
-	if err != nil || itemsNil {
+	itemsPtr, err := GetItemsPtr(obj)
+	if err != nil {
 		return nil, err
 	}
-	if err := extractor.validate(); err != nil {
+	items, err := conversion.EnforcePtr(itemsPtr)
+	if err != nil {
 		return nil, err
 	}
-	list := make([]runtime.Object, extractor.items.Len())
+	if items.IsNil() {
+		return nil, nil
+	}
+	list := make([]runtime.Object, items.Len())
+	if len(list) == 0 {
+		return list, nil
+	}
+	elemType := items.Type().Elem()
+	isRawExtension := elemType == rawExtensionObjectType
+	implementsObject := elemType.Implements(objectType)
 	for i := range list {
-		list[i] = extractor.item(i)
+		raw := items.Index(i)
+		switch {
+		case isRawExtension:
+			item := raw.Interface().(runtime.RawExtension)
+			switch {
+			case item.Object != nil:
+				list[i] = item.Object
+			case item.Raw != nil:
+				// TODO: Set ContentEncoding and ContentType correctly.
+				list[i] = &runtime.Unknown{Raw: item.Raw}
+			default:
+				list[i] = nil
+			}
+		case implementsObject:
+			list[i] = raw.Interface().(runtime.Object)
+		case allocNew:
+			// shallow copy to avoid retaining a reference to the original list item
+			itemCopy := reflect.New(raw.Type())
+			// assign to itemCopy and type-assert
+			itemCopy.Elem().Set(raw)
+			var ok bool
+			// reflect.New will guarantee that itemCopy must be a pointer.
+			if list[i], ok = itemCopy.Interface().(runtime.Object); !ok {
+				return nil, fmt.Errorf("%v: item[%v]: Expected object, got %#v(%s)", obj, i, raw.Interface(), raw.Kind())
+			}
+		default:
+			var found bool
+			if list[i], found = raw.Addr().Interface().(runtime.Object); !found {
+				return nil, fmt.Errorf("%v: item[%v]: Expected object, got %#v(%s)", obj, i, raw.Interface(), raw.Kind())
+			}
+		}
 	}
 	return list, nil
 }
@@ -284,10 +323,9 @@ type listItemExtractor struct {
 	items            reflect.Value
 	isRawExtension   bool
 	implementsObject bool
-	allocNew         bool
 }
 
-func newListItemExtractor(obj runtime.Object, allocNew bool) (listItemExtractor, bool, error) {
+func newListItemExtractor(obj runtime.Object) (listItemExtractor, bool, error) {
 	itemsPtr, err := GetItemsPtr(obj)
 	if err != nil {
 		return listItemExtractor{}, false, err
@@ -305,7 +343,6 @@ func newListItemExtractor(obj runtime.Object, allocNew bool) (listItemExtractor,
 		items:            items,
 		isRawExtension:   elemType == rawExtensionObjectType,
 		implementsObject: elemType.Implements(objectType),
-		allocNew:         allocNew,
 	}, false, nil
 }
 
@@ -318,11 +355,7 @@ func (e listItemExtractor) validate() error {
 		return nil
 	}
 	raw := e.items.Index(0)
-	if e.allocNew {
-		if reflect.PointerTo(raw.Type()).Implements(objectType) {
-			return nil
-		}
-	} else if raw.Addr().Type().Implements(objectType) {
+	if raw.Addr().Type().Implements(objectType) {
 		return nil
 	}
 	return e.itemError(0, raw)
@@ -344,13 +377,6 @@ func (e listItemExtractor) item(i int) runtime.Object {
 		}
 	case e.implementsObject:
 		return raw.Interface().(runtime.Object)
-	case e.allocNew:
-		// shallow copy to avoid retaining a reference to the original list item
-		itemCopy := reflect.New(raw.Type())
-		// assign to itemCopy and type-assert
-		itemCopy.Elem().Set(raw)
-		// reflect.New will guarantee that itemCopy must be a pointer.
-		return itemCopy.Interface().(runtime.Object)
 	default:
 		return raw.Addr().Interface().(runtime.Object)
 	}
