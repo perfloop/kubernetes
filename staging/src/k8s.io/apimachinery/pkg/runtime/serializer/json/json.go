@@ -149,9 +149,25 @@ func (s *Serializer) Decode(originalData []byte, gvk *schema.GroupVersionKind, i
 		var err error
 		if s.options.Strict && isUnstructured {
 			strictYAMLConverted = true
-			data, strictErr = yaml.YAMLToJSONStrict(originalData)
+			var partialYAML interface{}
+			var strictConversionErr error
+			data, partialYAML, strictErr, strictConversionErr = strictYAMLToJSON(originalData)
 			if strictErr != nil {
+				// yaml.v2 leaves the first duplicate value in its partial result.
+				// Use that result only for SimpleMetaFactory errors when the root
+				// apiVersion and kind values cannot be affected by a duplicate.
+				if strictConversionErr == nil && partialStrictYAMLMayHaveMetadataError(partialYAML) {
+					if canUsePartialStrictYAMLMetadata(originalData, strictErr, s.meta) {
+						if metadataData, metadataConversionErr := strictYAMLMetadataJSON(partialYAML); metadataConversionErr == nil {
+							if _, metadataErr := s.meta.Interpret(metadataData); metadataErr != nil {
+								return nil, nil, metadataErr
+							}
+						}
+					}
+				}
 				data, err = yaml.YAMLToJSON(originalData)
+			} else {
+				err = strictConversionErr
 			}
 		} else {
 			data, err = yaml.YAMLToJSON(originalData)
