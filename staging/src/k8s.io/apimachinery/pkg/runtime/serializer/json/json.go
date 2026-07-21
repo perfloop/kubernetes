@@ -139,37 +139,18 @@ func (s *Serializer) Decode(originalData []byte, gvk *schema.GroupVersionKind, i
 	_, isUnstructured := into.(runtime.Unstructured)
 
 	data := originalData
-	var strictErr error
 	strictYAMLConverted := false
+	strictYAMLHasDuplicate := false
 	if s.options.Yaml {
 		// Direct unstructured decoding reaches unmarshal after metadata
-		// interpretation, so its strict conversion can be reused there. Other
-		// targets can return after metadata or destination resolution, so retain
-		// their regular conversion.
+		// interpretation, so conversion and duplicate detection can share one
+		// YAML parse. Other targets can return after metadata or destination
+		// resolution, so retain their regular conversion.
 		var err error
 		if s.options.Strict && isUnstructured {
-			strictYAMLConverted = true
-			var partialYAML interface{}
-			var strictConversionErr error
-			data, partialYAML, strictErr, strictConversionErr = strictYAMLToJSON(originalData)
-			if strictErr != nil {
-				// yaml.v2 leaves the first duplicate value in its partial result.
-				// Use that result only for SimpleMetaFactory errors when the root
-				// apiVersion and kind values cannot be affected by a duplicate.
-				if strictConversionErr == nil && partialStrictYAMLMayHaveMetadataError(partialYAML) {
-					if canUsePartialStrictYAMLMetadata(originalData, strictErr, s.meta) {
-						if metadataData, metadataConversionErr := strictYAMLMetadataJSON(partialYAML); metadataConversionErr == nil {
-							if _, metadataErr := s.meta.Interpret(metadataData); metadataErr != nil {
-								return nil, nil, metadataErr
-							}
-						}
-					}
-				}
-				data, err = yaml.YAMLToJSON(originalData)
-			} else {
-				err = strictConversionErr
-			}
-		} else {
+			data, strictYAMLHasDuplicate, strictYAMLConverted = yamlToJSONWithDuplicateDetection(originalData)
+		}
+		if !strictYAMLConverted {
 			data, err = yaml.YAMLToJSON(originalData)
 		}
 		if err != nil {
@@ -197,7 +178,7 @@ func (s *Serializer) Decode(originalData []byte, gvk *schema.GroupVersionKind, i
 		types, _, err := s.typer.ObjectKinds(into)
 		switch {
 		case runtime.IsNotRegisteredError(err), isUnstructured:
-			strictErrs, err := s.unmarshal(into, data, originalData, strictYAMLConverted, strictErr)
+			strictErrs, err := s.unmarshal(into, data, originalData, strictYAMLConverted, strictYAMLHasDuplicate)
 			if err != nil {
 				return nil, actual, err
 			}
@@ -237,7 +218,7 @@ func (s *Serializer) Decode(originalData []byte, gvk *schema.GroupVersionKind, i
 		return nil, actual, err
 	}
 
-	strictErrs, err := s.unmarshal(obj, data, originalData, strictYAMLConverted, strictErr)
+	strictErrs, err := s.unmarshal(obj, data, originalData, strictYAMLConverted, strictYAMLHasDuplicate)
 	if err != nil {
 		return nil, actual, err
 	} else if len(strictErrs) > 0 {
@@ -295,7 +276,7 @@ func (s *Serializer) IsStrict() bool {
 	return s.options.Strict
 }
 
-func (s *Serializer) unmarshal(into runtime.Object, data, originalData []byte, strictYAMLConverted bool, yamlStrictErr error) (strictErrs []error, err error) {
+func (s *Serializer) unmarshal(into runtime.Object, data, originalData []byte, strictYAMLConverted, strictYAMLHasDuplicate bool) (strictErrs []error, err error) {
 	// If the deserializer is non-strict, return here.
 	if !s.options.Strict {
 		if err := kjson.UnmarshalCaseSensitivePreserveInts(data, into); err != nil {
@@ -304,10 +285,10 @@ func (s *Serializer) unmarshal(into runtime.Object, data, originalData []byte, s
 		return nil, nil
 	}
 
-	if s.options.Yaml && !strictYAMLConverted {
-		// Decode retained the regular conversion for a path that can return early.
-		// If this path reaches unmarshal after all, collect its strict YAML diagnostic
-		// just as Decode did before reusing strict conversion for materialization.
+	var yamlStrictErr error
+	if s.options.Yaml && (!strictYAMLConverted || strictYAMLHasDuplicate) {
+		// A duplicate is diagnosed only after metadata interpretation, matching the
+		// regular-conversion path's error precedence.
 		_, yamlStrictErr = yaml.YAMLToJSONStrict(originalData)
 	}
 	if yamlStrictErr != nil {

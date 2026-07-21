@@ -23,7 +23,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-func TestStrictYAMLToJSON(t *testing.T) {
+func TestYAMLToJSONWithDuplicateDetection(t *testing.T) {
 	for _, data := range [][]byte{
 		[]byte("apiVersion: v1\nkind: ConfigMap\ndata:\n  enabled: true\n  replicas: 3\n  nested:\n    name: example\n"),
 		[]byte("apiVersion: v1\nkind: List\nitems:\n  - kind: ConfigMap\n    data:\n      one: 1\n      two: 2\n"),
@@ -34,44 +34,36 @@ func TestStrictYAMLToJSON(t *testing.T) {
 			t.Fatalf("YAMLToJSONStrict(%q): %v", data, err)
 		}
 
-		actual, partialYAML, strictErr, conversionErr := strictYAMLToJSON(data)
-		if partialYAML != nil || strictErr != nil || conversionErr != nil {
-			t.Fatalf("strictYAMLToJSON(%q) returned strict=%v conversion=%v", data, strictErr, conversionErr)
+		actual, hasDuplicate, ok := yamlToJSONWithDuplicateDetection(data)
+		if !ok || hasDuplicate {
+			t.Fatalf("yamlToJSONWithDuplicateDetection(%q) returned ok=%t duplicate=%t", data, ok, hasDuplicate)
 		}
 		if !bytes.Equal(actual, expected) {
-			t.Fatalf("strictYAMLToJSON(%q) = %s, want %s", data, actual, expected)
+			t.Fatalf("yamlToJSONWithDuplicateDetection(%q) = %s, want %s", data, actual, expected)
 		}
 	}
 }
 
-func TestCanUsePartialStrictYAMLMetadata(t *testing.T) {
-	nestedDuplicate := []byte("apiVersion:\n  - v1\nkind: ConfigMap\ndata:\n  duplicate: first\n  duplicate: second\n")
-	_, partialYAML, strictErr, conversionErr := strictYAMLToJSON(nestedDuplicate)
-	if partialYAML == nil || strictErr == nil || conversionErr != nil {
-		t.Fatalf("strictYAMLToJSON returned strict=%v conversion=%v, want duplicate error", strictErr, conversionErr)
+func TestYAMLToJSONWithDuplicateDetectionFallsBackForNonMappings(t *testing.T) {
+	for _, data := range [][]byte{[]byte(""), []byte("null\n"), []byte("[]\n"), []byte("{}\n")} {
+		if _, _, ok := yamlToJSONWithDuplicateDetection(data); ok {
+			t.Fatalf("yamlToJSONWithDuplicateDetection(%q) unexpectedly accepted a non-mapping", data)
+		}
 	}
-	if !partialStrictYAMLMayHaveMetadataError(partialYAML) {
-		t.Fatal("partialStrictYAMLMayHaveMetadataError rejected an apiVersion array")
-	}
-	if !canUsePartialStrictYAMLMetadata(nestedDuplicate, strictErr, SimpleMetaFactory{}) {
-		t.Fatal("canUsePartialStrictYAMLMetadata rejected a nested duplicate with stable root metadata")
+}
+
+func TestYAMLToJSONWithDuplicateDetectionRetainsLastValue(t *testing.T) {
+	data := []byte("apiVersion: v1\nkind: ConfigMap\ndata:\n  value: first\n  value: second\n")
+	expected, err := yaml.YAMLToJSON(data)
+	if err != nil {
+		t.Fatalf("YAMLToJSON: %v", err)
 	}
 
-	missingKind := []byte("apiVersion: v1\ndata:\n  duplicate: first\n  duplicate: second\n")
-	_, partialYAML, strictErr, conversionErr = strictYAMLToJSON(missingKind)
-	if partialYAML == nil || strictErr == nil || conversionErr != nil {
-		t.Fatalf("strictYAMLToJSON returned strict=%v conversion=%v, want duplicate error", strictErr, conversionErr)
+	actual, hasDuplicate, ok := yamlToJSONWithDuplicateDetection(data)
+	if !ok || !hasDuplicate {
+		t.Fatalf("yamlToJSONWithDuplicateDetection returned ok=%t duplicate=%t", ok, hasDuplicate)
 	}
-	if partialStrictYAMLMayHaveMetadataError(partialYAML) {
-		t.Fatal("partialStrictYAMLMayHaveMetadataError accepted a valid apiVersion without kind")
-	}
-
-	rootDuplicate := []byte("apiVersion: v1\napiVersion:\n  - v1\nkind: ConfigMap\n")
-	_, partialYAML, strictErr, conversionErr = strictYAMLToJSON(rootDuplicate)
-	if partialYAML == nil || strictErr == nil || conversionErr != nil {
-		t.Fatalf("strictYAMLToJSON returned strict=%v conversion=%v, want duplicate error", strictErr, conversionErr)
-	}
-	if canUsePartialStrictYAMLMetadata(rootDuplicate, strictErr, SimpleMetaFactory{}) {
-		t.Fatal("canUsePartialStrictYAMLMetadata accepted duplicate root apiVersion")
+	if !bytes.Equal(actual, expected) {
+		t.Fatalf("yamlToJSONWithDuplicateDetection = %s, want %s", actual, expected)
 	}
 }

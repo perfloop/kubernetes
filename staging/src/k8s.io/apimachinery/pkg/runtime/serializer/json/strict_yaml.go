@@ -19,67 +19,84 @@ package json
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
-	"strings"
 
 	yamlv2 "go.yaml.in/yaml/v2"
-
-	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-// strictYAMLToJSON converts YAML once. For duplicate-key errors it retains the
-// partial YAML object without converting it: yaml.v2 retains the first duplicate
-// value, whereas regular YAML decoding retains the last one.
-func strictYAMLToJSON(data []byte) ([]byte, interface{}, error, error) {
-	var yamlObj interface{}
-	strictErr := yamlv2.UnmarshalStrict(data, &yamlObj)
-	if strictErr != nil {
-		return nil, yamlObj, strictErr, nil
+// yamlToJSONWithDuplicateDetection converts a YAML mapping while preserving
+// duplicate keys long enough to detect them. It returns ok=false for YAML
+// constructs that must use sigs.k8s.io/yaml's general conversion instead.
+func yamlToJSONWithDuplicateDetection(data []byte) ([]byte, bool, bool) {
+	if bytes.Contains(data, []byte("<<")) {
+		return nil, false, false
 	}
 
-	jsonObj, err := yamlToJSONableObject(yamlObj)
+	var yamlObj yamlv2.MapSlice
+	if err := yamlv2.Unmarshal(data, &yamlObj); err != nil || len(yamlObj) == 0 {
+		return nil, false, false
+	}
+
+	jsonObj, hasDuplicate, err := yamlToJSONableObject(yamlObj)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, false, false
 	}
 	jsonData, err := json.Marshal(jsonObj)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, false, false
 	}
-	return jsonData, nil, nil, nil
+	return jsonData, hasDuplicate, true
 }
 
-// yamlToJSONableObject mirrors sigs.k8s.io/yaml's conversion with no target type.
-func yamlToJSONableObject(yamlObj interface{}) (interface{}, error) {
+// yamlToJSONableObject mirrors sigs.k8s.io/yaml's conversion with no target
+// type while retaining duplicate information from yaml.MapSlice.
+func yamlToJSONableObject(yamlObj interface{}) (interface{}, bool, error) {
 	switch typedYAMLObj := yamlObj.(type) {
-	case map[interface{}]interface{}:
+	case yamlv2.MapSlice:
 		strMap := make(map[string]interface{}, len(typedYAMLObj))
-		for key, value := range typedYAMLObj {
-			keyString, err := yamlMapKeyToString(key, value)
+		seenKeys := make(map[interface{}]struct{}, len(typedYAMLObj))
+		jsonKeys := make(map[string]interface{}, len(typedYAMLObj))
+		hasDuplicate := false
+		for _, item := range typedYAMLObj {
+			keyString, err := yamlMapKeyToString(item.Key, item.Value)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
-			jsonValue, err := yamlToJSONableObject(value)
+			if previousKey, found := jsonKeys[keyString]; found && !reflect.DeepEqual(previousKey, item.Key) {
+				return nil, false, fmt.Errorf("multiple YAML map keys convert to JSON key %q", keyString)
+			}
+			jsonKeys[keyString] = item.Key
+			if _, found := seenKeys[item.Key]; found {
+				hasDuplicate = true
+			}
+			seenKeys[item.Key] = struct{}{}
+
+			jsonValue, valueHasDuplicate, err := yamlToJSONableObject(item.Value)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			strMap[keyString] = jsonValue
+			hasDuplicate = hasDuplicate || valueHasDuplicate
 		}
-		return strMap, nil
+		return strMap, hasDuplicate, nil
 	case []interface{}:
 		array := make([]interface{}, len(typedYAMLObj))
+		hasDuplicate := false
 		for i, value := range typedYAMLObj {
-			jsonValue, err := yamlToJSONableObject(value)
+			jsonValue, valueHasDuplicate, err := yamlToJSONableObject(value)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			array[i] = jsonValue
+			hasDuplicate = hasDuplicate || valueHasDuplicate
 		}
-		return array, nil
+		return array, hasDuplicate, nil
+	case map[interface{}]interface{}, map[string]interface{}:
+		return nil, false, fmt.Errorf("unexpected YAML map type %T", yamlObj)
 	default:
-		return yamlObj, nil
+		return yamlObj, false, nil
 	}
 }
 
@@ -107,136 +124,4 @@ func yamlMapKeyToString(key, value interface{}) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported map key of type: %s, key: %+#v, value: %+#v", reflect.TypeOf(key), key, value)
 	}
-}
-
-func partialStrictYAMLMayHaveMetadataError(yamlObj interface{}) bool {
-	root, ok := yamlObj.(map[interface{}]interface{})
-	if !ok {
-		return true
-	}
-
-	for key, value := range root {
-		keyString, ok := key.(string)
-		if !ok {
-			continue
-		}
-		switch keyString {
-		case "apiVersion":
-			switch typedValue := value.(type) {
-			case nil:
-			case string:
-				if _, err := schema.ParseGroupVersion(typedValue); err != nil {
-					return true
-				}
-			default:
-				return true
-			}
-		case "kind":
-			if value != nil {
-				if _, ok := value.(string); !ok {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-func strictYAMLMetadataJSON(yamlObj interface{}) ([]byte, error) {
-	root, ok := yamlObj.(map[interface{}]interface{})
-	if !ok {
-		return nil, fmt.Errorf("expected a YAML mapping, got %T", yamlObj)
-	}
-
-	metadata := make(map[string]interface{}, 2)
-	for key, value := range root {
-		keyString, ok := key.(string)
-		if !ok || (keyString != "apiVersion" && keyString != "kind") {
-			continue
-		}
-		jsonValue, err := yamlToJSONableObject(value)
-		if err != nil {
-			return nil, err
-		}
-		metadata[keyString] = jsonValue
-	}
-	return json.Marshal(metadata)
-}
-
-func canUsePartialStrictYAMLMetadata(data []byte, strictErr error, meta MetaFactory) bool {
-	if !isSimpleMetaFactory(meta) || !isDuplicateYAMLError(strictErr) {
-		return false
-	}
-
-	apiVersionCount := 0
-	kindCount := 0
-	sawRootKey := false
-	for len(data) > 0 {
-		line := data
-		if newline := bytes.IndexByte(line, '\n'); newline >= 0 {
-			line, data = line[:newline], line[newline+1:]
-		} else {
-			data = nil
-		}
-		line = bytes.TrimSuffix(line, []byte{'\r'})
-		if len(line) == 0 || line[0] == '#' {
-			continue
-		}
-		if line[0] == ' ' {
-			continue
-		}
-
-		key, ok := simpleYAMLRootKey(line)
-		if !ok {
-			return false
-		}
-		sawRootKey = true
-		switch key {
-		case "apiVersion":
-			apiVersionCount++
-		case "kind":
-			kindCount++
-		}
-	}
-	return sawRootKey && apiVersionCount <= 1 && kindCount <= 1
-}
-
-func isSimpleMetaFactory(meta MetaFactory) bool {
-	switch meta.(type) {
-	case SimpleMetaFactory, *SimpleMetaFactory:
-		return true
-	default:
-		return false
-	}
-}
-
-func isDuplicateYAMLError(err error) bool {
-	var typeErr *yamlv2.TypeError
-	if !errors.As(err, &typeErr) || len(typeErr.Errors) == 0 {
-		return false
-	}
-	for _, message := range typeErr.Errors {
-		if !strings.Contains(message, "already set in map") {
-			return false
-		}
-	}
-	return true
-}
-
-func simpleYAMLRootKey(line []byte) (string, bool) {
-	colon := bytes.IndexByte(line, ':')
-	if colon <= 0 || (colon+1 < len(line) && line[colon+1] != ' ' && line[colon+1] != '#') {
-		return "", false
-	}
-	key := line[:colon]
-	for i, character := range key {
-		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character == '_' {
-			continue
-		}
-		if i > 0 && (character >= '0' && character <= '9' || character == '-') {
-			continue
-		}
-		return "", false
-	}
-	return string(key), true
 }
