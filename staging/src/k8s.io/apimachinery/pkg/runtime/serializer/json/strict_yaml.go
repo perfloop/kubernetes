@@ -75,11 +75,27 @@ func yamlToJSONWithDuplicateDetection(data []byte) ([]byte, bool, bool, error) {
 // explicit-key, flow-collection, or alias indicator. A leading '-' may be a
 // root sequence or document marker, so it uses the regular converter without
 // scanning the full input.
+var yamlConversionFallbackByte = [256]bool{
+	'<':  true,
+	'!':  true,
+	'\\': true,
+	'%':  true,
+	'?':  true,
+	'[':  true,
+	'{':  true,
+	'*':  true,
+}
+
 func mayRequireRegularYAMLConversion(data []byte) bool {
 	if mayStartWithYAMLSequenceOrDocument(data) {
 		return true
 	}
-	return bytes.ContainsAny(data, "<!\\%?[{*")
+	for _, b := range data {
+		if yamlConversionFallbackByte[b] {
+			return true
+		}
+	}
+	return false
 }
 
 func mayStartWithYAMLSequenceOrDocument(data []byte) bool {
