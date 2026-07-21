@@ -640,18 +640,19 @@ func TestDecode(t *testing.T) {
 			yaml:   true,
 			strict: true,
 		},
-		// Duplicate fields should return an error when Decode creates the target.
+		// Valid strict YAML should decode directly into unstructured.
 		{
-			data: []byte("kind: Test\n" +
+			data: []byte("kind: Custom\n" +
 				"apiVersion: other/blah\n" +
-				"value: 1\n" +
-				"value: 1\n"),
+				"value: kept\n"),
+			into:        &unstructured.Unstructured{},
 			typer:       &mockTyper{gvk: &schema.GroupVersionKind{Kind: "Test", Group: "other", Version: "blah"}},
-			creater:     &mockCreater{obj: &testDecodable{}},
-			expectedGVK: &schema.GroupVersionKind{Kind: "Test", Group: "other", Version: "blah"},
-			errFn: func(err error) bool {
-				return strings.Contains(err.Error(), `"value" already set in map`)
-			},
+			expectedGVK: &schema.GroupVersionKind{Kind: "Custom", Group: "other", Version: "blah"},
+			expectedObject: &unstructured.Unstructured{Object: map[string]interface{}{
+				"apiVersion": "other/blah",
+				"kind":       "Custom",
+				"value":      "kept",
+			}},
 			yaml:   true,
 			strict: true,
 		},
