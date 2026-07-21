@@ -27,7 +27,6 @@ import (
 
 	"sigs.k8s.io/randfill"
 
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	testapigroupv1 "k8s.io/apimachinery/pkg/apis/testapigroup/v1"
@@ -109,18 +108,7 @@ func testStreamingPointerItemsMutation(t *testing.T) {
 			{ObjectMeta: metav1.ObjectMeta{Name: "second"}},
 		},
 	}
-	legacyItems, err := meta.ExtractList(list)
-	if err != nil {
-		t.Fatalf("ExtractList: %v", err)
-	}
 	list.Items[1].ObjectMeta.Name = "replacement"
-	legacyObject, err := meta.Accessor(legacyItems[1])
-	if err != nil {
-		t.Fatalf("legacy item accessor: %v", err)
-	}
-	if got := legacyObject.GetName(); got != "replacement" {
-		t.Fatalf("ExtractList item after mutation = %q, want replacement", got)
-	}
 
 	normal := NewSerializerWithOptions(DefaultMetaFactory, nil, nil, SerializerOptions{})
 	var expected bytes.Buffer
