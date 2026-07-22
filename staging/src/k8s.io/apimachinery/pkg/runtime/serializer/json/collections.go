@@ -23,8 +23,8 @@ import (
 	"io"
 	"sort"
 
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/conversion"
+	listinternal "k8s.io/apimachinery/pkg/internal/list"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -52,43 +52,43 @@ func streamEncodeCollections(obj runtime.Object, w io.Writer) (bool, error) {
 // * Validate json tags to prevent incompatibility with json standard package.
 // * ListMetaAccessor doesn't distinguish empty from nil value.
 // * TypeAccessort reparsing "apiVersion" and serializing it with "{group}/{version}"
-func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, meta.ListItemIterator, bool, error) {
+func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, listinternal.ItemIterator, bool, error) {
 	listValue, err := conversion.EnforcePtr(list)
 	if err != nil {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, meta.ListItemIterator{}, false, err
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listinternal.ItemIterator{}, false, err
 	}
 	listType := listValue.Type()
 	if listType.NumField() != 3 {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, meta.ListItemIterator{}, false, fmt.Errorf("expected ListType to have 3 fields")
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listinternal.ItemIterator{}, false, fmt.Errorf("expected ListType to have 3 fields")
 	}
 	// TypeMeta
 	typeMeta, ok := listValue.Field(0).Interface().(metav1.TypeMeta)
 	if !ok {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, meta.ListItemIterator{}, false, fmt.Errorf("expected TypeMeta field to have TypeMeta type")
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listinternal.ItemIterator{}, false, fmt.Errorf("expected TypeMeta field to have TypeMeta type")
 	}
 	if !listType.Field(0).Anonymous {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, meta.ListItemIterator{}, false, fmt.Errorf(`expected TypeMeta json field tag to be embedded`)
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listinternal.ItemIterator{}, false, fmt.Errorf(`expected TypeMeta json field tag to be embedded`)
 	}
 	if jsonTag, jsonTagExists := listType.Field(0).Tag.Lookup("json"); !jsonTagExists {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, meta.ListItemIterator{}, false, fmt.Errorf(`expected TypeMeta json field tag`)
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listinternal.ItemIterator{}, false, fmt.Errorf(`expected TypeMeta json field tag`)
 	} else if jsonTag != "" && jsonTag != ",inline" {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, meta.ListItemIterator{}, false, fmt.Errorf(`expected TypeMeta json field tag to be "" or ",inline"`)
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listinternal.ItemIterator{}, false, fmt.Errorf(`expected TypeMeta json field tag to be "" or ",inline"`)
 	}
 	// ListMeta
 	listMeta, ok := listValue.Field(1).Interface().(metav1.ListMeta)
 	if !ok {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, meta.ListItemIterator{}, false, fmt.Errorf("expected ListMeta field to have ListMeta type")
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listinternal.ItemIterator{}, false, fmt.Errorf("expected ListMeta field to have ListMeta type")
 	}
 	if listType.Field(1).Tag.Get("json") != "metadata,omitempty" {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, meta.ListItemIterator{}, false, fmt.Errorf(`expected ListMeta json field tag to be "metadata,omitempty"`)
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listinternal.ItemIterator{}, false, fmt.Errorf(`expected ListMeta json field tag to be "metadata,omitempty"`)
 	}
 	// Items
-	items, itemsNil, err := meta.NewListItemIterator(list)
+	items, itemsNil, err := listinternal.NewItemIterator(list)
 	if err != nil {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, meta.ListItemIterator{}, false, err
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listinternal.ItemIterator{}, false, err
 	}
 	if listType.Field(2).Tag.Get("json") != "items" {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, meta.ListItemIterator{}, false, fmt.Errorf(`expected Items json field tag to be "items"`)
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listinternal.ItemIterator{}, false, fmt.Errorf(`expected Items json field tag to be "items"`)
 	}
 	return typeMeta, listMeta, items, itemsNil, nil
 }
@@ -107,7 +107,7 @@ func newStreamEncoder(w io.Writer) *streamEncoder {
 	return e
 }
 
-func (e *streamEncoder) encodeList(typeMeta metav1.TypeMeta, listMeta metav1.ListMeta, items meta.ListItemIterator, itemsNil bool) error {
+func (e *streamEncoder) encodeList(typeMeta metav1.TypeMeta, listMeta metav1.ListMeta, items listinternal.ItemIterator, itemsNil bool) error {
 	// Start
 	if _, err := e.w.Write([]byte(`{`)); err != nil {
 		return err
@@ -140,7 +140,7 @@ func (e *streamEncoder) encodeList(typeMeta metav1.TypeMeta, listMeta metav1.Lis
 	return err
 }
 
-func (e *streamEncoder) encodeListItems(items meta.ListItemIterator, itemsNil bool) (err error) {
+func (e *streamEncoder) encodeListItems(items listinternal.ItemIterator, itemsNil bool) (err error) {
 	if itemsNil {
 		return e.encodeKeyValuePair("items", nil, nil)
 	}

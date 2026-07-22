@@ -211,57 +211,6 @@ func ExtractListWithAlloc(obj runtime.Object) ([]runtime.Object, error) {
 	return extractList(obj, true)
 }
 
-// ListItemIterator provides access to the objects ExtractList would return
-// without always materializing a []runtime.Object result.
-type ListItemIterator struct {
-	extractor listItemExtractor
-	items     []runtime.Object
-}
-
-// NewListItemIterator returns a validated iterator over obj's Items field. It returns
-// true when obj's Items field is nil, in which case the returned iterator has length zero.
-// It preserves ExtractList's item representations: conversions that capture an item value do
-// so before this function returns, while pointer-based items retain their Items backing array.
-func NewListItemIterator(obj runtime.Object) (ListItemIterator, bool, error) {
-	extractor, itemsNil, err := newListItemExtractor(obj)
-	if err != nil || itemsNil {
-		return ListItemIterator{}, itemsNil, err
-	}
-	if err := extractor.validate(obj); err != nil {
-		return ListItemIterator{}, false, err
-	}
-	if !extractor.requiresSnapshot() {
-		// Keep the Items slice header stable just as ExtractList's pointers retain
-		// the backing array that was present when extraction began.
-		extractor.items = reflect.ValueOf(extractor.items.Interface())
-		return ListItemIterator{extractor: extractor}, false, nil
-	}
-	iterator := ListItemIterator{items: make([]runtime.Object, extractor.items.Len())}
-	for i := range iterator.items {
-		iterator.items[i] = extractor.item(i)
-	}
-	return iterator, false, nil
-}
-
-// Len returns the number of objects in the iterator.
-func (i ListItemIterator) Len() int {
-	if i.items != nil {
-		return len(i.items)
-	}
-	if !i.extractor.items.IsValid() {
-		return 0
-	}
-	return i.extractor.items.Len()
-}
-
-// Item returns the object at index. It panics if index is out of range.
-func (i ListItemIterator) Item(index int) runtime.Object {
-	if i.items != nil {
-		return i.items[index]
-	}
-	return i.extractor.item(index)
-}
-
 // allocNew: Whether shallow copy is required when the elements in Object.Items are struct
 func extractList(obj runtime.Object, allocNew bool) ([]runtime.Object, error) {
 	itemsPtr, err := GetItemsPtr(obj)
@@ -316,68 +265,6 @@ func extractList(obj runtime.Object, allocNew bool) ([]runtime.Object, error) {
 		}
 	}
 	return list, nil
-}
-
-type listItemExtractor struct {
-	items            reflect.Value
-	isRawExtension   bool
-	implementsObject bool
-}
-
-func newListItemExtractor(obj runtime.Object) (listItemExtractor, bool, error) {
-	itemsPtr, err := GetItemsPtr(obj)
-	if err != nil {
-		return listItemExtractor{}, false, err
-	}
-	items, err := conversion.EnforcePtr(itemsPtr)
-	if err != nil {
-		return listItemExtractor{}, false, err
-	}
-	if items.IsNil() {
-		return listItemExtractor{}, true, nil
-	}
-	elemType := items.Type().Elem()
-	return listItemExtractor{
-		items:            items,
-		isRawExtension:   elemType == rawExtensionObjectType,
-		implementsObject: elemType.Implements(objectType),
-	}, false, nil
-}
-
-func (e listItemExtractor) requiresSnapshot() bool {
-	return e.isRawExtension || e.implementsObject
-}
-
-func (e listItemExtractor) validate(obj runtime.Object) error {
-	if e.items.Len() == 0 || e.requiresSnapshot() {
-		return nil
-	}
-	raw := e.items.Index(0)
-	if raw.Addr().Type().Implements(objectType) {
-		return nil
-	}
-	return fmt.Errorf("%v: item[%v]: Expected object, got %#v(%s)", obj, 0, raw.Interface(), raw.Kind())
-}
-
-func (e listItemExtractor) item(i int) runtime.Object {
-	raw := e.items.Index(i)
-	switch {
-	case e.isRawExtension:
-		item := raw.Interface().(runtime.RawExtension)
-		switch {
-		case item.Object != nil:
-			return item.Object
-		case item.Raw != nil:
-			// TODO: Set ContentEncoding and ContentType correctly.
-			return &runtime.Unknown{Raw: item.Raw}
-		default:
-			return nil
-		}
-	case e.implementsObject:
-		return raw.Interface().(runtime.Object)
-	default:
-		return raw.Addr().Interface().(runtime.Object)
-	}
 }
 
 var (
