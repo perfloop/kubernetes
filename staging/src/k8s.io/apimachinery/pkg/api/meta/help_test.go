@@ -444,7 +444,7 @@ func TestListItemIterator(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			iterator, itemsNil, err := internallist.NewItemIterator(tc.list)
+			iterator, itemsNil, err := newListItemIterator(tc.list)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("internallist.NewItemIterator() error = %v, want error = %t", err, tc.wantErr)
 			}
@@ -473,7 +473,7 @@ func TestListItemIterator(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ExtractList: %v", err)
 		}
-		iterator, itemsNil, err := internallist.NewItemIterator(list)
+		iterator, itemsNil, err := newListItemIterator(list)
 		if err != nil {
 			t.Fatalf("NewItemIterator: %v", err)
 		}
@@ -493,7 +493,7 @@ func TestListItemIterator(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ExtractList: %v", err)
 		}
-		iterator, itemsNil, err := internallist.NewItemIterator(list)
+		iterator, itemsNil, err := newListItemIterator(list)
 		if err != nil {
 			t.Fatalf("NewItemIterator: %v", err)
 		}
@@ -513,7 +513,7 @@ func TestListItemIterator(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ExtractList: %v", err)
 		}
-		iterator, itemsNil, err := internallist.NewItemIterator(list)
+		iterator, itemsNil, err := newListItemIterator(list)
 		if err != nil {
 			t.Fatalf("NewItemIterator: %v", err)
 		}
@@ -533,7 +533,7 @@ func TestListItemIterator(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ExtractList: %v", err)
 		}
-		iterator, itemsNil, err := internallist.NewItemIterator(list)
+		iterator, itemsNil, err := newListItemIterator(list)
 		if err != nil {
 			t.Fatalf("NewItemIterator: %v", err)
 		}
@@ -557,7 +557,7 @@ func TestListItemIterator(t *testing.T) {
 			},
 			payload: payload,
 		}
-		iterator, itemsNil, err := internallist.NewItemIterator(list)
+		iterator, itemsNil, err := newListItemIterator(list)
 		if err != nil {
 			t.Fatalf("NewItemIterator: %v", err)
 		}
@@ -586,6 +586,14 @@ func TestListItemIterator(t *testing.T) {
 			}
 		}
 	})
+}
+
+func newListItemIterator(list runtime.Object) (internallist.ItemIterator, bool, error) {
+	itemsPtr, err := GetItemsPtr(list)
+	if err != nil {
+		return internallist.ItemIterator{}, false, err
+	}
+	return internallist.NewItemIterator(itemsPtr)
 }
 
 func iteratorObjects(iterator internallist.ItemIterator) []runtime.Object {

@@ -23,6 +23,7 @@ import (
 	"io"
 	"sort"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/conversion"
 	listinternal "k8s.io/apimachinery/pkg/internal/list"
 
@@ -83,7 +84,11 @@ func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, listint
 		return metav1.TypeMeta{}, metav1.ListMeta{}, listinternal.ItemIterator{}, false, fmt.Errorf(`expected ListMeta json field tag to be "metadata,omitempty"`)
 	}
 	// Items
-	items, itemsNil, err := listinternal.NewItemIterator(list)
+	itemsPtr, err := meta.GetItemsPtr(list)
+	if err != nil {
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listinternal.ItemIterator{}, false, err
+	}
+	items, itemsNil, err := listinternal.NewItemIterator(itemsPtr)
 	if err != nil {
 		return metav1.TypeMeta{}, metav1.ListMeta{}, listinternal.ItemIterator{}, false, err
 	}

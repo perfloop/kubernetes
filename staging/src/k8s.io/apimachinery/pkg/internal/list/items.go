@@ -18,7 +18,6 @@ limitations under the License.
 package list
 
 import (
-	"errors"
 	"fmt"
 	"reflect"
 
@@ -27,9 +26,6 @@ import (
 )
 
 var (
-	errExpectFieldItems = errors.New("no Items field in this object")
-	errExpectSliceItems = errors.New("Items field must be a slice of objects")
-
 	objectType       = reflect.TypeOf((*runtime.Object)(nil)).Elem()
 	rawExtensionType = reflect.TypeOf(runtime.RawExtension{})
 )
@@ -43,16 +39,16 @@ type ItemIterator struct {
 	items     []runtime.Object
 }
 
-// NewItemIterator returns a validated iterator over obj's Items field. It
-// reports whether Items is nil. RawExtension and value-receiver items are
-// converted before it returns, while pointer-receiver items retain their Items
-// backing array.
-func NewItemIterator(obj runtime.Object) (ItemIterator, bool, error) {
-	extractor, itemsNil, err := newItemExtractor(obj)
+// NewItemIterator returns a validated iterator over the Items slice referenced
+// by itemsPtr. It reports whether Items is nil. RawExtension and value-receiver
+// items are converted before it returns, while pointer-receiver items retain
+// their Items backing array.
+func NewItemIterator(itemsPtr interface{}) (ItemIterator, bool, error) {
+	extractor, itemsNil, err := newItemExtractor(itemsPtr)
 	if err != nil || itemsNil {
 		return ItemIterator{}, itemsNil, err
 	}
-	if err := extractor.validate(obj); err != nil {
+	if err := extractor.validate(); err != nil {
 		return ItemIterator{}, false, err
 	}
 	if !extractor.requiresSnapshot() {
@@ -93,11 +89,7 @@ type itemExtractor struct {
 	implementsObject bool
 }
 
-func newItemExtractor(obj runtime.Object) (itemExtractor, bool, error) {
-	itemsPtr, err := GetItemsPtr(obj)
-	if err != nil {
-		return itemExtractor{}, false, err
-	}
+func newItemExtractor(itemsPtr interface{}) (itemExtractor, bool, error) {
 	items, err := conversion.EnforcePtr(itemsPtr)
 	if err != nil {
 		return itemExtractor{}, false, err
@@ -113,45 +105,11 @@ func newItemExtractor(obj runtime.Object) (itemExtractor, bool, error) {
 	}, false, nil
 }
 
-// GetItemsPtr returns a pointer to the list object's Items member.
-// If list does not have an Items member, it returns an error.
-func GetItemsPtr(list runtime.Object) (interface{}, error) {
-	items, err := getItemsPtr(list)
-	if err != nil {
-		return nil, fmt.Errorf("%T is not a list: %v", list, err)
-	}
-	return items, nil
-}
-
-func getItemsPtr(list runtime.Object) (interface{}, error) {
-	value, err := conversion.EnforcePtr(list)
-	if err != nil {
-		return nil, err
-	}
-
-	items := value.FieldByName("Items")
-	if !items.IsValid() {
-		return nil, errExpectFieldItems
-	}
-	switch items.Kind() {
-	case reflect.Interface, reflect.Pointer:
-		target := reflect.TypeOf(items.Interface()).Elem()
-		if target.Kind() != reflect.Slice {
-			return nil, errExpectSliceItems
-		}
-		return items.Interface(), nil
-	case reflect.Slice:
-		return items.Addr().Interface(), nil
-	default:
-		return nil, errExpectSliceItems
-	}
-}
-
 func (e itemExtractor) requiresSnapshot() bool {
 	return e.isRawExtension || e.implementsObject
 }
 
-func (e itemExtractor) validate(obj runtime.Object) error {
+func (e itemExtractor) validate() error {
 	if e.items.Len() == 0 || e.requiresSnapshot() {
 		return nil
 	}
@@ -159,7 +117,7 @@ func (e itemExtractor) validate(obj runtime.Object) error {
 	if raw.Addr().Type().Implements(objectType) {
 		return nil
 	}
-	return fmt.Errorf("%v: item[%v]: Expected object, got %#v(%s)", obj, 0, raw.Interface(), raw.Kind())
+	return fmt.Errorf("item[%v]: Expected object, got %#v(%s)", 0, raw.Interface(), raw.Kind())
 }
 
 func (e itemExtractor) item(index int) runtime.Object {
