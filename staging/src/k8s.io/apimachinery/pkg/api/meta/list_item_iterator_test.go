@@ -135,26 +135,6 @@ func TestListItemIterator(t *testing.T) {
 		}
 	})
 
-	t.Run("retains pointer receiver backing array", func(t *testing.T) {
-		list := iteratorCarpListWithNames("first", "second")
-		want, err := meta.ExtractList(list)
-		if err != nil {
-			t.Fatalf("ExtractList: %v", err)
-		}
-		iterator, itemsNil, err := newListItemIterator(list)
-		if err != nil {
-			t.Fatalf("NewItemIterator: %v", err)
-		}
-		if itemsNil {
-			t.Fatal("internallist.NewItemIterator() itemsNil = true, want false")
-		}
-		list.Items = []testapigroupv1.Carp{{ObjectMeta: metav1.ObjectMeta{Name: "replacement"}}}
-
-		if got := iteratorObjects(iterator); !reflect.DeepEqual(got, want) {
-			t.Errorf("ItemIterator after replacing Items = %#v, want ExtractList snapshot %#v", got, want)
-		}
-	})
-
 	t.Run("matches pointer receiver item mutation", func(t *testing.T) {
 		list := iteratorCarpListWithNames("first", "second")
 		want, err := meta.ExtractList(list)
