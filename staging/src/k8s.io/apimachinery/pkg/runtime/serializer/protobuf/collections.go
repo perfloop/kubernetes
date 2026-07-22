@@ -22,9 +22,9 @@ import (
 	"io"
 	"math/bits"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/conversion"
-	listinternal "k8s.io/apimachinery/pkg/internal/list"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -75,7 +75,7 @@ func getStreamingListData(list runtime.Object) (data streamingListData, err erro
 	if listType.Field(2).Tag.Get("protobuf") != "bytes,2,rep,name=items" {
 		return data, errItemsProtobufTag
 	}
-	items, _, err := listinternal.NewItemIterator(list)
+	items, err := meta.ExtractList(list)
 	if err != nil {
 		return data, err
 	}
@@ -94,7 +94,7 @@ type streamingListData struct {
 
 	// itemsSizes caches results from .Size() call to items, doesn't include header bytes (field identifier, size)
 	itemsSizes []int
-	items      listinternal.ItemIterator
+	items      []runtime.Object
 }
 
 type sizer interface {
@@ -103,14 +103,13 @@ type sizer interface {
 
 // listSize return size of ListMeta and items to be later used for preallocations.
 // listMetaSize and itemSizes do not include header bytes (field identifier, size).
-func listSize(listMeta metav1.ListMeta, items listinternal.ItemIterator) (totalSize, listMetaSize int, itemSizes []int, err error) {
+func listSize(listMeta metav1.ListMeta, items []runtime.Object) (totalSize, listMetaSize int, itemSizes []int, err error) {
 	// ListMeta
 	listMetaSize = listMeta.Size()
 	totalSize += 1 + sovGenerated(uint64(listMetaSize)) + listMetaSize
 	// Items
-	itemSizes = make([]int, items.Len())
-	for i := 0; i < items.Len(); i++ {
-		item := items.Item(i)
+	itemSizes = make([]int, len(items))
+	for i, item := range items {
 		sizer, ok := item.(sizer)
 		if !ok {
 			return totalSize, listMetaSize, nil, errItemsSizer
@@ -145,8 +144,7 @@ func streamingEncodeList(w io.Writer, listData streamingListData, memAlloc runti
 		return size, err
 	}
 	// Items; 0x12 = (2 << 3) | 2; field number: 2, type: 2 (LEN). https://protobuf.dev/programming-guides/encoding/#structure
-	for i := 0; i < listData.items.Len(); i++ {
-		item := listData.items.Item(i)
+	for i, item := range listData.items {
 		n, err := doEncodeWithHeader(item, w, 0x12, listData.itemsSizes[i], headerScratch, memAlloc)
 		size += n
 		if err != nil {

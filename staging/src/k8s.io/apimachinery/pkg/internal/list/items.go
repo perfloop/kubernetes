@@ -14,19 +14,22 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package list provides serializer-internal access to typed list items.
+// Package list provides internal access to typed list items.
 package list
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/conversion"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
 var (
+	errExpectFieldItems = errors.New("no Items field in this object")
+	errExpectSliceItems = errors.New("Items field must be a slice of objects")
+
 	objectType       = reflect.TypeOf((*runtime.Object)(nil)).Elem()
 	rawExtensionType = reflect.TypeOf(runtime.RawExtension{})
 )
@@ -34,8 +37,7 @@ var (
 // ItemIterator provides the objects meta.ExtractList would return without
 // materializing a []runtime.Object result for pointer-receiver item lists.
 // RawExtension and value-receiver items are snapshotted to preserve ExtractList
-// semantics. It is shared only by streaming serializers, which validate list
-// items before writing output.
+// semantics. Streaming serializers validate list items before writing output.
 type ItemIterator struct {
 	extractor itemExtractor
 	items     []runtime.Object
@@ -92,7 +94,7 @@ type itemExtractor struct {
 }
 
 func newItemExtractor(obj runtime.Object) (itemExtractor, bool, error) {
-	itemsPtr, err := meta.GetItemsPtr(obj)
+	itemsPtr, err := GetItemsPtr(obj)
 	if err != nil {
 		return itemExtractor{}, false, err
 	}
@@ -109,6 +111,40 @@ func newItemExtractor(obj runtime.Object) (itemExtractor, bool, error) {
 		isRawExtension:   elemType == rawExtensionType,
 		implementsObject: elemType.Implements(objectType),
 	}, false, nil
+}
+
+// GetItemsPtr returns a pointer to the list object's Items member.
+// If list does not have an Items member, it returns an error.
+func GetItemsPtr(list runtime.Object) (interface{}, error) {
+	items, err := getItemsPtr(list)
+	if err != nil {
+		return nil, fmt.Errorf("%T is not a list: %v", list, err)
+	}
+	return items, nil
+}
+
+func getItemsPtr(list runtime.Object) (interface{}, error) {
+	value, err := conversion.EnforcePtr(list)
+	if err != nil {
+		return nil, err
+	}
+
+	items := value.FieldByName("Items")
+	if !items.IsValid() {
+		return nil, errExpectFieldItems
+	}
+	switch items.Kind() {
+	case reflect.Interface, reflect.Pointer:
+		target := reflect.TypeOf(items.Interface()).Elem()
+		if target.Kind() != reflect.Slice {
+			return nil, errExpectSliceItems
+		}
+		return items.Interface(), nil
+	case reflect.Slice:
+		return items.Addr().Interface(), nil
+	default:
+		return nil, errExpectSliceItems
+	}
 }
 
 func (e itemExtractor) requiresSnapshot() bool {

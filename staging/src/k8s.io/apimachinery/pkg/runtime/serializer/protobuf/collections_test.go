@@ -29,7 +29,6 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	testapigroupv1 "k8s.io/apimachinery/pkg/apis/testapigroup/v1"
-	listinternal "k8s.io/apimachinery/pkg/internal/list"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -41,26 +40,6 @@ func TestCollectionsEncoding(t *testing.T) {
 	t.Run("Streaming", func(t *testing.T) {
 		testCollectionsEncoding(t, NewSerializerWithOptions(nil, nil, SerializerOptions{StreamingCollectionsEncoding: true}), true)
 	})
-}
-
-func TestStreamingListDataRetainsItemsHeader(t *testing.T) {
-	list := &testapigroupv1.CarpList{Items: []testapigroupv1.Carp{
-		{ObjectMeta: metav1.ObjectMeta{Name: "first"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "second"}},
-	}}
-	data, err := getStreamingListData(list)
-	if err != nil {
-		t.Fatalf("getStreamingListData: %v", err)
-	}
-	list.Items = []testapigroupv1.Carp{{ObjectMeta: metav1.ObjectMeta{Name: "replacement"}}}
-
-	item, ok := data.items.Item(0).(*testapigroupv1.Carp)
-	if !ok {
-		t.Fatalf("first item = %T, want *testapigroupv1.Carp", data.items.Item(0))
-	}
-	if item.Name != "first" {
-		t.Errorf("first item name = %q, want %q", item.Name, "first")
-	}
 }
 
 func testCollectionsEncoding(t *testing.T, s *Serializer, streamingEnabled bool) {
@@ -312,14 +291,13 @@ func TestFuzzCollection(t *testing.T) {
 
 func TestCallsToSize(t *testing.T) {
 	counter := &countingSizer{data: []byte("abba")}
-	items := newItemIterator(t, counter)
 	listMeta := metav1.ListMeta{}
 	listData := streamingListData{
 		totalSize:    14,
 		listMeta:     listMeta,
 		listMetaSize: listMeta.Size(),
 		itemsSizes:   []int{counter.Size()},
-		items:        items,
+		items:        []runtime.Object{counter},
 	}
 	err := streamingEncodeUnknownList(io.Discard, runtime.Unknown{}, listData, &runtime.Allocator{})
 	if err != nil {
@@ -329,25 +307,6 @@ func TestCallsToSize(t *testing.T) {
 		t.Errorf("Expected only 1 call to sizer, got %d", counter.count)
 	}
 }
-
-func newItemIterator(t *testing.T, objects ...runtime.Object) listinternal.ItemIterator {
-	t.Helper()
-	items, itemsNil, err := listinternal.NewItemIterator(&objectList{Items: objects})
-	if err != nil {
-		t.Fatalf("NewItemIterator: %v", err)
-	}
-	if itemsNil {
-		t.Fatal("NewItemIterator() itemsNil = true, want false")
-	}
-	return items
-}
-
-type objectList struct {
-	Items []runtime.Object
-}
-
-func (*objectList) GetObjectKind() schema.ObjectKind { return schema.EmptyObjectKind }
-func (*objectList) DeepCopyObject() runtime.Object   { return nil }
 
 type countingSizer struct {
 	data  []byte
