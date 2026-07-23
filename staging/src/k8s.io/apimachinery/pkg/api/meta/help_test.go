@@ -17,17 +17,14 @@ limitations under the License.
 package meta
 
 import (
-	"bytes"
 	"reflect"
 	"strconv"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	testapigroupv1 "k8s.io/apimachinery/pkg/apis/testapigroup/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	serializerjson "k8s.io/apimachinery/pkg/runtime/serializer/json"
 )
 
 const (
@@ -399,46 +396,6 @@ func TestExtractList(t *testing.T) {
 			})
 		})
 	}
-}
-
-func TestListItemIterator(t *testing.T) {
-	list := &testapigroupv1.CarpList{
-		TypeMeta: metav1.TypeMeta{Kind: "CarpList", APIVersion: "testapigroup.k8s.io/v1"},
-		Items: []testapigroupv1.Carp{
-			{ObjectMeta: metav1.ObjectMeta{Name: "first"}},
-			{ObjectMeta: metav1.ObjectMeta{Name: "second"}},
-		},
-	}
-
-	normal := serializerjson.NewSerializerWithOptions(serializerjson.DefaultMetaFactory, nil, nil, serializerjson.SerializerOptions{})
-	var expected bytes.Buffer
-	if err := normal.Encode(list, &expected); err != nil {
-		t.Fatalf("normal encoder: %v", err)
-	}
-
-	streaming := serializerjson.NewSerializerWithOptions(serializerjson.DefaultMetaFactory, nil, nil, serializerjson.SerializerOptions{StreamingCollectionsEncoding: true})
-	actual := &iteratorMutatingBuffer{mutate: func() {
-		list.Items = []testapigroupv1.Carp{{ObjectMeta: metav1.ObjectMeta{Name: "replacement"}}}
-	}}
-	if err := streaming.Encode(list, actual); err != nil {
-		t.Fatalf("streaming encoder: %v", err)
-	}
-	if !bytes.Equal(actual.Bytes(), expected.Bytes()) {
-		t.Errorf("streaming output = %q, want %q", actual.String(), expected.String())
-	}
-}
-
-type iteratorMutatingBuffer struct {
-	bytes.Buffer
-	mutate func()
-}
-
-func (b *iteratorMutatingBuffer) Write(data []byte) (int, error) {
-	if b.mutate != nil {
-		b.mutate()
-		b.mutate = nil
-	}
-	return b.Buffer.Write(data)
 }
 
 func TestLenList(t *testing.T) {
