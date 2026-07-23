@@ -44,6 +44,7 @@ func TestCollectionsEncoding(t *testing.T) {
 	t.Run("Streaming snapshots raw extension items before writing", testStreamingRawExtensionItemsSnapshot)
 	t.Run("Streaming snapshots value items before writing", testStreamingValueItemsSnapshot)
 	t.Run("Streaming matches pointer item mutation", testStreamingPointerItemsMutation)
+	t.Run("Streaming retains pointer item backing array", testStreamingPointerItemsHeaderReplacement)
 }
 
 func testStreamingRawExtensionItemsSnapshot(t *testing.T) {
@@ -120,6 +121,33 @@ func testStreamingPointerItemsMutation(t *testing.T) {
 	streaming := NewSerializerWithOptions(DefaultMetaFactory, nil, nil, SerializerOptions{StreamingCollectionsEncoding: true})
 	actual := &mutatingBuffer{mutate: func() {
 		list.Items[1].ObjectMeta.Name = "replacement"
+	}}
+	if err := streaming.Encode(list, actual); err != nil {
+		t.Fatalf("streaming encoder: %v", err)
+	}
+	if !bytes.Equal(actual.Bytes(), expected.Bytes()) {
+		t.Errorf("streaming output = %q, want %q", actual.String(), expected.String())
+	}
+}
+
+func testStreamingPointerItemsHeaderReplacement(t *testing.T) {
+	list := &testapigroupv1.CarpList{
+		TypeMeta: metav1.TypeMeta{Kind: "CarpList", APIVersion: "testapigroup.k8s.io/v1"},
+		Items: []testapigroupv1.Carp{
+			{ObjectMeta: metav1.ObjectMeta{Name: "first"}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "second"}},
+		},
+	}
+
+	normal := NewSerializerWithOptions(DefaultMetaFactory, nil, nil, SerializerOptions{})
+	var expected bytes.Buffer
+	if err := normal.Encode(list, &expected); err != nil {
+		t.Fatalf("normal encoder: %v", err)
+	}
+
+	streaming := NewSerializerWithOptions(DefaultMetaFactory, nil, nil, SerializerOptions{StreamingCollectionsEncoding: true})
+	actual := &mutatingBuffer{mutate: func() {
+		list.Items = []testapigroupv1.Carp{{ObjectMeta: metav1.ObjectMeta{Name: "replacement"}}}
 	}}
 	if err := streaming.Encode(list, actual); err != nil {
 		t.Fatalf("streaming encoder: %v", err)
