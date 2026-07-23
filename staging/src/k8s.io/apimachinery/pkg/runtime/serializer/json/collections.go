@@ -135,9 +135,6 @@ func (i listItemIterator) Len() int {
 	if i.items != nil {
 		return len(i.items)
 	}
-	if !i.extractor.items.IsValid() {
-		return 0
-	}
 	return i.extractor.items.Len()
 }
 
