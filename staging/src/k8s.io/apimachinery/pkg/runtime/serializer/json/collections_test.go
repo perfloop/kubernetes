@@ -664,6 +664,24 @@ func testCollectionsEncoding(t *testing.T, s *Serializer, streamingEnabled bool)
 			cannotStream: true,
 			expect:       "{\"kind\":\"List\",\"apiVersion\":\"v1\",\"metadata\":{\"resourceVersion\":\"2345\"},\"items\":[],\"AdditionalField\":0}\n",
 		},
+		// An interface-held slice is JSON-serializable but is not a typed list representation
+		// that the streaming path can safely address; it must fall back without writing a prefix.
+		{
+			name: "List with interface items cannot be streamed",
+			in: &ListWithInterfaceItems{
+				Items: []testapigroupv1.Carp{{}},
+			},
+			cannotStream: true,
+			expect:       "{\"metadata\":{},\"items\":[{\"metadata\":{},\"spec\":{},\"status\":{}}]}\n",
+		},
+		{
+			name: "List with typed-nil interface items cannot be streamed",
+			in: &ListWithInterfaceItems{
+				Items: []testapigroupv1.Carp(nil),
+			},
+			cannotStream: true,
+			expect:       "{\"metadata\":{},\"items\":null}\n",
+		},
 		{
 			name: "Not a collection cannot be streamed",
 			in: &testapigroupv1.Carp{
@@ -909,6 +927,16 @@ type ListWithAdditionalFields struct {
 }
 
 func (s *ListWithAdditionalFields) DeepCopyObject() runtime.Object {
+	return nil
+}
+
+type ListWithInterfaceItems struct {
+	metav1.TypeMeta `json:""`
+	metav1.ListMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
+	Items           interface{} `json:"items" protobuf:"bytes,2,rep,name=items"`
+}
+
+func (s *ListWithInterfaceItems) DeepCopyObject() runtime.Object {
 	return nil
 }
 

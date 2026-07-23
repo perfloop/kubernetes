@@ -91,7 +91,7 @@ func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, listIte
 		return metav1.TypeMeta{}, metav1.ListMeta{}, listItemIterator{}, false, fmt.Errorf(`expected Items json field tag to be "items"`)
 	}
 	if itemsField.Kind() == reflect.Interface {
-		if itemsField.IsNil() {
+		if itemsField.IsNil() || itemsField.Elem().Kind() != reflect.Pointer {
 			return metav1.TypeMeta{}, metav1.ListMeta{}, listItemIterator{}, false, fmt.Errorf("expected Items field to be a slice")
 		}
 		itemsField = itemsField.Elem()
