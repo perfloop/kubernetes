@@ -691,6 +691,14 @@ func testCollectionsEncoding(t *testing.T, s *Serializer, streamingEnabled bool)
 			expect:       "{\"metadata\":{},\"items\":[{\"metadata\":{},\"spec\":{},\"status\":{}}]}\n",
 		},
 		{
+			name: "List with pointer items cannot be streamed",
+			in: &ListWithPointerItems{
+				Items: &[]testapigroupv1.Carp{{}},
+			},
+			cannotStream: true,
+			expect:       "{\"metadata\":{},\"items\":[{\"metadata\":{},\"spec\":{},\"status\":{}}]}\n",
+		},
+		{
 			name: "Not a collection cannot be streamed",
 			in: &testapigroupv1.Carp{
 				TypeMeta: metav1.TypeMeta{
@@ -945,6 +953,16 @@ type ListWithInterfaceItems struct {
 }
 
 func (s *ListWithInterfaceItems) DeepCopyObject() runtime.Object {
+	return nil
+}
+
+type ListWithPointerItems struct {
+	metav1.TypeMeta `json:""`
+	metav1.ListMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
+	Items           *[]testapigroupv1.Carp `json:"items" protobuf:"bytes,2,rep,name=items"`
+}
+
+func (s *ListWithPointerItems) DeepCopyObject() runtime.Object {
 	return nil
 }
 

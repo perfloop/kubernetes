@@ -90,16 +90,10 @@ func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, listIte
 	if listType.Field(2).Tag.Get("json") != "items" {
 		return metav1.TypeMeta{}, metav1.ListMeta{}, listItemIterator{}, false, fmt.Errorf(`expected Items json field tag to be "items"`)
 	}
-	if itemsField.Kind() == reflect.Interface {
+	if !itemsField.CanAddr() || !itemsField.CanInterface() || itemsField.Kind() != reflect.Slice {
 		return metav1.TypeMeta{}, metav1.ListMeta{}, listItemIterator{}, false, fmt.Errorf("expected Items field to be a slice")
 	}
-	if itemsField.Kind() == reflect.Slice {
-		itemsField = itemsField.Addr()
-	}
-	if !itemsField.CanInterface() || itemsField.Kind() != reflect.Pointer || itemsField.Type().Elem().Kind() != reflect.Slice {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, listItemIterator{}, false, fmt.Errorf("expected Items field to be a slice")
-	}
-	items, itemsNil, err := newListItemIterator(itemsField.Interface())
+	items, itemsNil, err := newListItemIterator(itemsField)
 	if err != nil {
 		return metav1.TypeMeta{}, metav1.ListMeta{}, listItemIterator{}, false, err
 	}
@@ -118,10 +112,15 @@ type listItemIterator struct {
 	items     []runtime.Object
 }
 
-func newListItemIterator(itemsPtr interface{}) (listItemIterator, bool, error) {
-	extractor, itemsNil, err := newListItemExtractor(itemsPtr)
-	if err != nil || itemsNil {
-		return listItemIterator{}, itemsNil, err
+func newListItemIterator(items reflect.Value) (listItemIterator, bool, error) {
+	if items.IsNil() {
+		return listItemIterator{}, true, nil
+	}
+	elemType := items.Type().Elem()
+	extractor := listItemExtractor{
+		items:            items,
+		isRawExtension:   elemType == listItemRawExtensionType,
+		implementsObject: elemType.Implements(listItemObjectType),
 	}
 	if err := extractor.validate(); err != nil {
 		return listItemIterator{}, false, err
@@ -157,22 +156,6 @@ type listItemExtractor struct {
 	items            reflect.Value
 	isRawExtension   bool
 	implementsObject bool
-}
-
-func newListItemExtractor(itemsPtr interface{}) (listItemExtractor, bool, error) {
-	items, err := conversion.EnforcePtr(itemsPtr)
-	if err != nil {
-		return listItemExtractor{}, false, err
-	}
-	if items.IsNil() {
-		return listItemExtractor{}, true, nil
-	}
-	elemType := items.Type().Elem()
-	return listItemExtractor{
-		items:            items,
-		isRawExtension:   elemType == listItemRawExtensionType,
-		implementsObject: elemType.Implements(listItemObjectType),
-	}, false, nil
 }
 
 func (e listItemExtractor) requiresSnapshot() bool {
