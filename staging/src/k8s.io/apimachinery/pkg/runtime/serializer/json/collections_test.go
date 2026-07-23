@@ -683,6 +683,14 @@ func testCollectionsEncoding(t *testing.T, s *Serializer, streamingEnabled bool)
 			expect:       "{\"metadata\":{},\"items\":null}\n",
 		},
 		{
+			name: "List with interface pointer items cannot be streamed",
+			in: &ListWithInterfaceItems{
+				Items: &[]testapigroupv1.Carp{{}},
+			},
+			cannotStream: true,
+			expect:       "{\"metadata\":{},\"items\":[{\"metadata\":{},\"spec\":{},\"status\":{}}]}\n",
+		},
+		{
 			name: "Not a collection cannot be streamed",
 			in: &testapigroupv1.Carp{
 				TypeMeta: metav1.TypeMeta{
