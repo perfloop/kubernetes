@@ -20,8 +20,10 @@ import (
 	"bytes"
 	"fmt"
 	"math/rand"
+	goruntime "runtime"
 	"slices"
 	"testing"
+	"weak"
 
 	"github.com/google/go-cmp/cmp"
 
@@ -45,6 +47,7 @@ func TestCollectionsEncoding(t *testing.T) {
 	t.Run("Streaming snapshots value items before writing", testStreamingValueItemsSnapshot)
 	t.Run("Streaming matches pointer item mutation", testStreamingPointerItemsMutation)
 	t.Run("Streaming retains pointer item backing array", testStreamingPointerItemsHeaderReplacement)
+	t.Run("Streaming iterator does not retain pointer list container", testStreamingPointerItemsDoNotRetainList)
 }
 
 func testStreamingRawExtensionItemsSnapshot(t *testing.T) {
@@ -154,6 +157,44 @@ func testStreamingPointerItemsHeaderReplacement(t *testing.T) {
 	}
 	if !bytes.Equal(actual.Bytes(), expected.Bytes()) {
 		t.Errorf("streaming output = %q, want %q", actual.String(), expected.String())
+	}
+}
+
+func testStreamingPointerItemsDoNotRetainList(t *testing.T) {
+	list := &testapigroupv1.CarpList{
+		TypeMeta: metav1.TypeMeta{Kind: "CarpList", APIVersion: "testapigroup.k8s.io/v1"},
+		Items: []testapigroupv1.Carp{
+			{ObjectMeta: metav1.ObjectMeta{Name: "first"}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "second"}},
+		},
+	}
+	listRef := weak.Make(list)
+	_, _, iterator, itemsNil, err := getListMeta(list)
+	if err != nil {
+		t.Fatalf("getListMeta: %v", err)
+	}
+	if itemsNil {
+		t.Fatal("getListMeta() itemsNil = true, want false")
+	}
+
+	list.Items = []testapigroupv1.Carp{{ObjectMeta: metav1.ObjectMeta{Name: "replacement"}}}
+	list = nil
+	for i := 0; i < 10 && listRef.Value() != nil; i++ {
+		goruntime.GC()
+	}
+	goruntime.KeepAlive(iterator)
+	if listRef.Value() != nil {
+		t.Fatal("iterator retained the list container")
+	}
+
+	for index, want := range []string{"first", "second"} {
+		item, ok := iterator.Item(index).(*testapigroupv1.Carp)
+		if !ok {
+			t.Fatalf("Item(%d) = %T, want *testapigroupv1.Carp", index, iterator.Item(index))
+		}
+		if item.Name != want {
+			t.Errorf("Item(%d) name = %q, want %q", index, item.Name, want)
+		}
 	}
 }
 

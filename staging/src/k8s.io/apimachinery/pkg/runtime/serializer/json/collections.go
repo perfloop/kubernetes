@@ -24,7 +24,6 @@ import (
 	"reflect"
 	"sort"
 
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/conversion"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -84,16 +83,28 @@ func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, listIte
 		return metav1.TypeMeta{}, metav1.ListMeta{}, listItemIterator{}, false, fmt.Errorf(`expected ListMeta json field tag to be "metadata,omitempty"`)
 	}
 	// Items
-	itemsPtr, err := meta.GetItemsPtr(list)
-	if err != nil {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, listItemIterator{}, false, err
-	}
-	items, itemsNil, err := newListItemIterator(itemsPtr)
-	if err != nil {
-		return metav1.TypeMeta{}, metav1.ListMeta{}, listItemIterator{}, false, err
+	itemsField := listValue.Field(2)
+	if listType.Field(2).Name != "Items" {
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listItemIterator{}, false, fmt.Errorf("expected Items field")
 	}
 	if listType.Field(2).Tag.Get("json") != "items" {
 		return metav1.TypeMeta{}, metav1.ListMeta{}, listItemIterator{}, false, fmt.Errorf(`expected Items json field tag to be "items"`)
+	}
+	if itemsField.Kind() == reflect.Interface {
+		if itemsField.IsNil() {
+			return metav1.TypeMeta{}, metav1.ListMeta{}, listItemIterator{}, false, fmt.Errorf("expected Items field to be a slice")
+		}
+		itemsField = itemsField.Elem()
+	}
+	if itemsField.Kind() == reflect.Slice {
+		itemsField = itemsField.Addr()
+	}
+	if !itemsField.CanInterface() || itemsField.Kind() != reflect.Pointer || itemsField.Type().Elem().Kind() != reflect.Slice {
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listItemIterator{}, false, fmt.Errorf("expected Items field to be a slice")
+	}
+	items, itemsNil, err := newListItemIterator(itemsField.Interface())
+	if err != nil {
+		return metav1.TypeMeta{}, metav1.ListMeta{}, listItemIterator{}, false, err
 	}
 	return typeMeta, listMeta, items, itemsNil, nil
 }
