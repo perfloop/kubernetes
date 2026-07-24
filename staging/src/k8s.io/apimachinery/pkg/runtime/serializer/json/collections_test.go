@@ -161,8 +161,12 @@ func testStreamingPointerItemsHeaderReplacement(t *testing.T) {
 }
 
 func testStreamingPointerItemsDoNotRetainList(t *testing.T) {
+	remainingItemCount := new(int64)
+	*remainingItemCount = 1
+	remainingItemCountRef := weak.Make(remainingItemCount)
 	list := &testapigroupv1.CarpList{
 		TypeMeta: metav1.TypeMeta{Kind: "CarpList", APIVersion: "testapigroup.k8s.io/v1"},
+		ListMeta: metav1.ListMeta{RemainingItemCount: remainingItemCount},
 		Items: []testapigroupv1.Carp{
 			{ObjectMeta: metav1.ObjectMeta{Name: "first"}},
 			{ObjectMeta: metav1.ObjectMeta{Name: "second"}},
@@ -178,13 +182,17 @@ func testStreamingPointerItemsDoNotRetainList(t *testing.T) {
 	}
 
 	list.Items = []testapigroupv1.Carp{{ObjectMeta: metav1.ObjectMeta{Name: "replacement"}}}
+	remainingItemCount = nil
 	list = nil
-	for i := 0; i < 10 && listRef.Value() != nil; i++ {
+	for i := 0; i < 10 && (listRef.Value() != nil || remainingItemCountRef.Value() != nil); i++ {
 		goruntime.GC()
 	}
 	goruntime.KeepAlive(iterator)
 	if listRef.Value() != nil {
 		t.Fatal("iterator retained the list container")
+	}
+	if remainingItemCountRef.Value() != nil {
+		t.Fatal("iterator retained list metadata")
 	}
 
 	for index, want := range []string{"first", "second"} {
@@ -683,22 +691,6 @@ func testCollectionsEncoding(t *testing.T, s *Serializer, streamingEnabled bool)
 			expect:       "{\"metadata\":{},\"items\":null}\n",
 		},
 		{
-			name: "List with interface pointer items cannot be streamed",
-			in: &ListWithInterfaceItems{
-				Items: &[]testapigroupv1.Carp{{}},
-			},
-			cannotStream: true,
-			expect:       "{\"metadata\":{},\"items\":[{\"metadata\":{},\"spec\":{},\"status\":{}}]}\n",
-		},
-		{
-			name: "List with pointer items cannot be streamed",
-			in: &ListWithPointerItems{
-				Items: &[]testapigroupv1.Carp{{}},
-			},
-			cannotStream: true,
-			expect:       "{\"metadata\":{},\"items\":[{\"metadata\":{},\"spec\":{},\"status\":{}}]}\n",
-		},
-		{
 			name: "Not a collection cannot be streamed",
 			in: &testapigroupv1.Carp{
 				TypeMeta: metav1.TypeMeta{
@@ -953,16 +945,6 @@ type ListWithInterfaceItems struct {
 }
 
 func (s *ListWithInterfaceItems) DeepCopyObject() runtime.Object {
-	return nil
-}
-
-type ListWithPointerItems struct {
-	metav1.TypeMeta `json:""`
-	metav1.ListMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
-	Items           *[]testapigroupv1.Carp `json:"items" protobuf:"bytes,2,rep,name=items"`
-}
-
-func (s *ListWithPointerItems) DeepCopyObject() runtime.Object {
 	return nil
 }
 
