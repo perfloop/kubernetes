@@ -18,8 +18,10 @@ package meta
 
 import (
 	"reflect"
+	goruntime "runtime"
 	"strconv"
 	"testing"
+	"weak"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -55,6 +57,19 @@ type SampleList struct {
 }
 
 func (s *SampleList) DeepCopyObject() runtime.Object { panic("unimplemented") }
+
+type extractListRetentionPayload struct {
+	data []byte
+}
+
+type extractListRetentionList struct {
+	metav1.TypeMeta
+	metav1.ListMeta
+	Items   []Sample
+	payload *extractListRetentionPayload
+}
+
+func (*extractListRetentionList) DeepCopyObject() runtime.Object { return nil }
 
 type RawExtensionList struct {
 	metav1.TypeMeta
@@ -396,6 +411,37 @@ func TestExtractList(t *testing.T) {
 			})
 		})
 	}
+	t.Run("RetainsItemsWithoutList", func(t *testing.T) {
+		payload := &extractListRetentionPayload{data: make([]byte, 1024)}
+		payloadRef := weak.Make(payload)
+		list := &extractListRetentionList{
+			Items:   []Sample{{ObjectMeta: metav1.ObjectMeta{Name: "original"}}},
+			payload: payload,
+		}
+
+		items, err := ExtractList(list)
+		if err != nil {
+			t.Fatalf("ExtractList: %v", err)
+		}
+		list.Items = []Sample{{ObjectMeta: metav1.ObjectMeta{Name: "replacement"}}}
+		payload = nil
+		list = nil
+
+		for i := 0; i < 10 && payloadRef.Value() != nil; i++ {
+			goruntime.GC()
+		}
+		goruntime.KeepAlive(items)
+		if payloadRef.Value() != nil {
+			t.Fatal("ExtractList retained the list container")
+		}
+		item, ok := items[0].(*Sample)
+		if !ok {
+			t.Fatalf("ExtractList item = %T, want *Sample", items[0])
+		}
+		if item.Name != "original" {
+			t.Errorf("ExtractList item name = %q, want %q", item.Name, "original")
+		}
+	})
 }
 
 func TestLenList(t *testing.T) {

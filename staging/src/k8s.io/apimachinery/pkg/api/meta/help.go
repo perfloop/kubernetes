@@ -23,6 +23,7 @@ import (
 	"sync"
 
 	"k8s.io/apimachinery/pkg/conversion"
+	listinternal "k8s.io/apimachinery/pkg/internal/list"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -221,6 +222,16 @@ func extractList(obj runtime.Object, allocNew bool) ([]runtime.Object, error) {
 	if err != nil {
 		return nil, err
 	}
+	if !allocNew {
+		iterator, itemsNil, err := listinternal.NewItemIterator(items, false)
+		if err != nil {
+			return nil, fmt.Errorf("%v: %w", obj, err)
+		}
+		if itemsNil {
+			return nil, nil
+		}
+		return iterator.Objects(), nil
+	}
 	if items.IsNil() {
 		return nil, nil
 	}
@@ -255,11 +266,6 @@ func extractList(obj runtime.Object, allocNew bool) ([]runtime.Object, error) {
 			var ok bool
 			// reflect.New will guarantee that itemCopy must be a pointer.
 			if list[i], ok = itemCopy.Interface().(runtime.Object); !ok {
-				return nil, fmt.Errorf("%v: item[%v]: Expected object, got %#v(%s)", obj, i, raw.Interface(), raw.Kind())
-			}
-		default:
-			var found bool
-			if list[i], found = raw.Addr().Interface().(runtime.Object); !found {
 				return nil, fmt.Errorf("%v: item[%v]: Expected object, got %#v(%s)", obj, i, raw.Interface(), raw.Kind())
 			}
 		}
