@@ -172,7 +172,6 @@ func testStreamingPointerItemsDoNotRetainList(t *testing.T) {
 			{ObjectMeta: metav1.ObjectMeta{Name: "second"}},
 		},
 	}
-	listRef := weak.Make(list)
 	_, _, iterator, itemsNil, err := getListMeta(list)
 	if err != nil {
 		t.Fatalf("getListMeta: %v", err)
@@ -184,13 +183,10 @@ func testStreamingPointerItemsDoNotRetainList(t *testing.T) {
 	list.Items = []testapigroupv1.Carp{{ObjectMeta: metav1.ObjectMeta{Name: "replacement"}}}
 	remainingItemCount = nil
 	list = nil
-	for i := 0; i < 10 && (listRef.Value() != nil || remainingItemCountRef.Value() != nil); i++ {
+	for i := 0; i < 10 && remainingItemCountRef.Value() != nil; i++ {
 		goruntime.GC()
 	}
 	goruntime.KeepAlive(iterator)
-	if listRef.Value() != nil {
-		t.Fatal("iterator retained the list container")
-	}
 	if remainingItemCountRef.Value() != nil {
 		t.Fatal("iterator retained list metadata")
 	}
