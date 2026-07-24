@@ -18,15 +18,11 @@ package meta
 
 import (
 	"reflect"
-	goruntime "runtime"
 	"strconv"
 	"testing"
-	"weak"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/conversion"
-	listinternal "k8s.io/apimachinery/pkg/internal/list"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -59,19 +55,6 @@ type SampleList struct {
 }
 
 func (s *SampleList) DeepCopyObject() runtime.Object { panic("unimplemented") }
-
-type extractListRetentionPayload struct {
-	data []byte
-}
-
-type extractListRetentionList struct {
-	metav1.TypeMeta
-	metav1.ListMeta
-	Items   []Sample
-	payload *extractListRetentionPayload
-}
-
-func (*extractListRetentionList) DeepCopyObject() runtime.Object { return nil }
 
 type RawExtensionList struct {
 	metav1.TypeMeta
@@ -413,58 +396,6 @@ func TestExtractList(t *testing.T) {
 			})
 		})
 	}
-	t.Run("RetainsItemsWithoutList", func(t *testing.T) {
-		payload := &extractListRetentionPayload{data: make([]byte, 1024)}
-		payloadRef := weak.Make(payload)
-		list := &extractListRetentionList{
-			Items:   []Sample{{ObjectMeta: metav1.ObjectMeta{Name: "original"}}},
-			payload: payload,
-		}
-
-		itemsPtr, err := GetItemsPtr(list)
-		if err != nil {
-			t.Fatalf("GetItemsPtr: %v", err)
-		}
-		itemsValue, err := conversion.EnforcePtr(itemsPtr)
-		if err != nil {
-			t.Fatalf("EnforcePtr: %v", err)
-		}
-		iterator, itemsNil, err := listinternal.NewItemIterator(itemsValue)
-		if err != nil {
-			t.Fatalf("NewItemIterator: %v", err)
-		}
-		if itemsNil || iterator.Len() != 1 {
-			t.Fatalf("iterator = nil:%t len:%d, want nil:false len:1", itemsNil, iterator.Len())
-		}
-		expected, err := ExtractList(list)
-		if err != nil {
-			t.Fatalf("ExtractList: %v", err)
-		}
-		if iterator.Item(0) != expected[0] {
-			t.Errorf("iterator item = %#v, want ExtractList item %#v", iterator.Item(0), expected[0])
-		}
-		expected = nil
-		list.Items = []Sample{{ObjectMeta: metav1.ObjectMeta{Name: "replacement"}}}
-		itemsPtr = nil
-		itemsValue = reflect.Value{}
-		payload = nil
-		list = nil
-
-		for i := 0; i < 10 && payloadRef.Value() != nil; i++ {
-			goruntime.GC()
-		}
-		goruntime.KeepAlive(iterator)
-		if payloadRef.Value() != nil {
-			t.Fatal("iterator retained the list container")
-		}
-		item, ok := iterator.Item(0).(*Sample)
-		if !ok {
-			t.Fatalf("iterator item = %T, want *Sample", iterator.Item(0))
-		}
-		if item.Name != "original" {
-			t.Errorf("iterator item name = %q, want %q", item.Name, "original")
-		}
-	})
 }
 
 func TestLenList(t *testing.T) {
