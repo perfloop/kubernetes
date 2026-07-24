@@ -38,9 +38,9 @@ type ItemIterator struct {
 }
 
 // NewItemIterator returns a validated iterator over an addressable Items slice.
-// It reports whether Items is nil. detachFromList copies the slice header when
-// the iterator outlives the list inspection.
-func NewItemIterator(items reflect.Value, detachFromList bool) (ItemIterator, bool, error) {
+// It reports whether Items is nil. Pointer-receiver iterators retain only an
+// Items slice header, so they do not retain the list container.
+func NewItemIterator(items reflect.Value) (ItemIterator, bool, error) {
 	if items.IsNil() {
 		return ItemIterator{}, true, nil
 	}
@@ -53,11 +53,9 @@ func NewItemIterator(items reflect.Value, detachFromList bool) (ItemIterator, bo
 		return ItemIterator{}, false, err
 	}
 	if !extractor.requiresSnapshot() {
-		if detachFromList {
-			// Retain the Items slice header, rather than the containing list, just as
-			// meta.ExtractList retains pointers to the backing array it observed.
-			extractor.items = reflect.ValueOf(extractor.items.Interface())
-		}
+		// Retain the Items slice header, rather than the containing list, just as
+		// meta.ExtractList retains pointers to the backing array it observed.
+		extractor.items = reflect.ValueOf(extractor.items.Interface())
 		return ItemIterator{extractor: extractor}, false, nil
 	}
 	iterator := ItemIterator{items: make([]runtime.Object, extractor.items.Len())}
@@ -81,19 +79,6 @@ func (i ItemIterator) Item(index int) runtime.Object {
 		return i.items[index]
 	}
 	return i.extractor.item(index)
-}
-
-// Objects materializes the iterator as the same []runtime.Object representation
-// returned by meta.ExtractList.
-func (i ItemIterator) Objects() []runtime.Object {
-	if i.items != nil {
-		return i.items
-	}
-	items := make([]runtime.Object, i.Len())
-	for index := range items {
-		items[index] = i.Item(index)
-	}
-	return items
 }
 
 type itemExtractor struct {

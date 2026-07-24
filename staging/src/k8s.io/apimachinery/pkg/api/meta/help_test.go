@@ -429,7 +429,7 @@ func TestExtractList(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EnforcePtr: %v", err)
 		}
-		iterator, itemsNil, err := listinternal.NewItemIterator(itemsValue, true)
+		iterator, itemsNil, err := listinternal.NewItemIterator(itemsValue)
 		if err != nil {
 			t.Fatalf("NewItemIterator: %v", err)
 		}

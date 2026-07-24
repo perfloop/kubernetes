@@ -94,7 +94,7 @@ func getListMeta(list runtime.Object) (metav1.TypeMeta, metav1.ListMeta, listint
 	if itemsField.Kind() != reflect.Slice {
 		return metav1.TypeMeta{}, metav1.ListMeta{}, listinternal.ItemIterator{}, false, fmt.Errorf("expected Items field to be a slice")
 	}
-	items, itemsNil, err := listinternal.NewItemIterator(itemsField, true)
+	items, itemsNil, err := listinternal.NewItemIterator(itemsField)
 	if err != nil {
 		return metav1.TypeMeta{}, metav1.ListMeta{}, listinternal.ItemIterator{}, false, err
 	}
