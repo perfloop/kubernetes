@@ -25,6 +25,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/conversion"
+	listinternal "k8s.io/apimachinery/pkg/internal/list"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -419,27 +421,48 @@ func TestExtractList(t *testing.T) {
 			payload: payload,
 		}
 
-		items, err := ExtractList(list)
+		itemsPtr, err := GetItemsPtr(list)
+		if err != nil {
+			t.Fatalf("GetItemsPtr: %v", err)
+		}
+		itemsValue, err := conversion.EnforcePtr(itemsPtr)
+		if err != nil {
+			t.Fatalf("EnforcePtr: %v", err)
+		}
+		iterator, itemsNil, err := listinternal.NewItemIterator(itemsValue, true)
+		if err != nil {
+			t.Fatalf("NewItemIterator: %v", err)
+		}
+		if itemsNil || iterator.Len() != 1 {
+			t.Fatalf("iterator = nil:%t len:%d, want nil:false len:1", itemsNil, iterator.Len())
+		}
+		expected, err := ExtractList(list)
 		if err != nil {
 			t.Fatalf("ExtractList: %v", err)
 		}
+		if iterator.Item(0) != expected[0] {
+			t.Errorf("iterator item = %#v, want ExtractList item %#v", iterator.Item(0), expected[0])
+		}
+		expected = nil
 		list.Items = []Sample{{ObjectMeta: metav1.ObjectMeta{Name: "replacement"}}}
+		itemsPtr = nil
+		itemsValue = reflect.Value{}
 		payload = nil
 		list = nil
 
 		for i := 0; i < 10 && payloadRef.Value() != nil; i++ {
 			goruntime.GC()
 		}
-		goruntime.KeepAlive(items)
+		goruntime.KeepAlive(iterator)
 		if payloadRef.Value() != nil {
-			t.Fatal("ExtractList retained the list container")
+			t.Fatal("iterator retained the list container")
 		}
-		item, ok := items[0].(*Sample)
+		item, ok := iterator.Item(0).(*Sample)
 		if !ok {
-			t.Fatalf("ExtractList item = %T, want *Sample", items[0])
+			t.Fatalf("iterator item = %T, want *Sample", iterator.Item(0))
 		}
 		if item.Name != "original" {
-			t.Errorf("ExtractList item name = %q, want %q", item.Name, "original")
+			t.Errorf("iterator item name = %q, want %q", item.Name, "original")
 		}
 	})
 }
